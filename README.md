@@ -7,3 +7,7 @@ If you use this code please cite: "Sarwar, O. 2022, Algorithms for Interpretable
 # Getting Started
 
 The pySTAR toolkit is installed as part of the IDAES Integrated Platform (IDAES-IP). Please see the README of the [IDAES-PSE repository](https://github.com/IDAES/idaes-pse) and/or the full [IDAES install instructions](https://idaes-pse.readthedocs.io/en/stable/tutorials/getting_started/index.html) for details.
+
+# Funding Acknowledgements
+
+This work was conducted as part of the Institute for the Design of Advanced Energy Systems (IDAES) with support through the Crosscutting Research Program within the U.S. Department of Energy’s Office of Fossil Energy and Carbon Management (FECM).
