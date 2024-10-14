@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Sarwar"
+  given-names: "Owais"
+title: "Algorithms for Interpretable High-Dimensional Regression"
+institution: "Carnegie Mellon University"
+type: "Thesis"
+year: 2023
+doi: doi.org/10.1184/R1/22138049.v1
