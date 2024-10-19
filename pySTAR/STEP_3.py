@@ -154,11 +154,12 @@ def constant_fit(es, cst_count, X, y, opt, tree):
             print('Tree is not valid')
             pass
 
+    objective_value = obj
     #To regularize RMSE
     max_min = np.max(y) - np.min(y)
     obj = obj / max_min
 
-    return es2, obj, r_squared
+    return es2, obj, r_squared, objective_value
 
 
 def EvaluateExpressionString(expression_string, Xt, yt):
