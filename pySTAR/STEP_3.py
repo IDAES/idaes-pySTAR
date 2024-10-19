@@ -35,7 +35,7 @@ def constant_fit(es, cst_count, X, y, opt, tree):
         for i in range(cst_count):
             cm.c[i] = 1 + random.random()
         n_data_set = [i for i in range(len(y))]
-        cm.y_pred = Var(n_data_set, domain=Reals)
+        cm.y_pred = Var(n_data_set, domain=Reals, initialize=3)
         # cm.y_pred = Var(n_data_set, domain=Reals, initialize=np.mean(y))
 
         pyomo_es = es.replace(":","i")
@@ -154,11 +154,12 @@ def constant_fit(es, cst_count, X, y, opt, tree):
             print('Tree is not valid')
             pass
 
+    objective_value = obj
     #To regularize RMSE
     max_min = np.max(y) - np.min(y)
     obj = obj / max_min
 
-    return es2, obj, r_squared
+    return es2, obj, r_squared, objective_value
 
 
 def EvaluateExpressionString(expression_string, Xt, yt):
