@@ -96,10 +96,10 @@ y, #target values
     m.subb = Constraint(n_data_set, NnotT, rule=subb_rule)
 
     def multa_rule(m,i,n): #If n is multiplication, return the product of the two children. If it is not a multiplication let it to range between gap between v bound
-        return m.v[i,n] - (m.v[i, 2*n] * m.v[i,2*n+1]) <= v_up - min(v_lo**2, v_lo*v_up, v_up**2)*(1-m.y[(n,"*")])
+        return m.v[i,n] - (m.v[i, 2*n] * m.v[i,2*n+1]) <= (v_up - min(v_lo**2, v_lo*v_up, v_up**2))*(1-m.y[(n,"*")])
     m.multa = Constraint(n_data_set, NnotT, rule=multa_rule)
     def multb_rule(m,i,n):
-        return m.v[i,n] - (m.v[i, 2*n] * m.v[i,2*n+1]) >= v_lo - max(v_lo**2, v_up**2)*(1-m.y[(n,"*")])
+        return m.v[i,n] - (m.v[i, 2*n] * m.v[i,2*n+1]) >= (v_lo - max(v_lo**2, v_up**2))*(1-m.y[(n,"*")])
     m.multb = Constraint(n_data_set, NnotT, rule=multb_rule)
 
     def diva_rule(m, i, n): #If n is division, return the division of the two children. Do not let it get divided by zero
