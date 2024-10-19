@@ -17,6 +17,7 @@ from pyomo.common.errors import ApplicationError
 from pyomo.opt import TerminationCondition
 
 np.random.seed(42)
+random.seed(42)
 
 def constant_fit(es, cst_count, X, y, opt, tree):
 
@@ -93,7 +94,7 @@ def constant_fit(es, cst_count, X, y, opt, tree):
                 print(content)
             print('Termination Condition:', results.solver.termination_condition)
 
-            if results.solver.termination_condition != TerminationCondition.optimal:
+            if results.solver.termination_condition != TerminationCondition.optimal and results.solver.termination_condition != TerminationCondition.infeasible:
                 print('Rerunning BARON with IPOPT allowable')
                 opt.options['MaxIter'] = 10  
                 opt.options['AllowIPOPT'] = 1

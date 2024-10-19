@@ -234,7 +234,7 @@ def OptionsForNodes(mr, Nodes, Yr, Or):
         Options_for_nodes[node] = Options_for_node
         
         if np.sum([mr.y[k].value for k in Options_for_node]) == 0:
-            Ys_for_node = [0]
+            Ys_for_node = [0] * len(Options_for_node)
         else:
             Ys_for_node = [mr.y[k].value / np.sum([mr.y[k].value for k in Options_for_node]) for k in Options_for_node]
         Ys_for_nodes[node] = Ys_for_node
