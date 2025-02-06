@@ -42,7 +42,7 @@ y, #target values
     ###### Model Set Up ############################################################################
     m = ConcreteModel()
     m.y = Var(Y, domain=UnitInterval)
-    m.c = Var(N, domain=NonNegativeReals, bounds=(c_lo, c_up))
+    m.c = Var(N, domain=Reals, bounds=(c_lo, c_up))
     m.v = Var(n_data_set, N, domain=Reals, bounds=(v_lo, v_up))
     #m.eps = Var(n_data_set, N, domain=NonNegativeReals, bounds=(eps,0.5), initialize=eps)
 
