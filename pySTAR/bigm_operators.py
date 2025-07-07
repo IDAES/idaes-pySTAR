@@ -5,10 +5,12 @@ the big-m approach
 """
 
 import pyomo.environ as pyo
-from pySTAR.custom_block.custom_block import BlockData, declare_custom_block
+from custom_block.custom_block import BlockData, declare_custom_block
+
+OPTION_NAMES = ["val_node", "op_bin_var"]
 
 
-@declare_custom_block("BaseOperator")
+@declare_custom_block("BaseOperator", model_options=OPTION_NAMES)
 class BaseOperatorData(BlockData):
     """Operator template for big-m type constraints"""
 
@@ -23,7 +25,7 @@ class BaseOperatorData(BlockData):
         # operator binary variables.
         return self.parent_block().parent_block()
 
-    def build(self, val_node: pyo.Var, op_bin_var: dict):
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
         """
         Builds the operator-specific constraints
 
@@ -45,11 +47,11 @@ class BaseOperatorData(BlockData):
         raise NotImplementedError()
 
 
-@declare_custom_block("SumOperator")
+@declare_custom_block("SumOperator", OPTION_NAMES)
 class SumOperatorData(BaseOperatorData):
     """Adds constraints for the addition operator"""
 
-    def build(self, val_node: pyo.Var, op_bin_var: dict):
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
         srm = self.symbolic_regression_model
         vlb, vub = srm.var_bounds["lb"], srm.var_bounds["ub"]
 
@@ -72,12 +74,11 @@ class SumOperatorData(BaseOperatorData):
         pass
 
 
-@declare_custom_block("DiffOperator")
+@declare_custom_block("DiffOperator", OPTION_NAMES)
 class DiffOperatorData(BaseOperatorData):
-    """Template for difference operator"""
+    """Adds constraints for the difference operator"""
 
-    def build(self, val_node: pyo.Var, op_bin_var: dict):
-        """Function containing operator-specific constraints"""
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
         srm = self.symbolic_regression_model
         vlb, vub = srm.var_bounds["lb"], srm.var_bounds["ub"]
 
@@ -100,12 +101,11 @@ class DiffOperatorData(BaseOperatorData):
         pass
 
 
-@declare_custom_block("MultOperator")
+@declare_custom_block("MultOperator", OPTION_NAMES)
 class MultOperatorData(BaseOperatorData):
-    """Template for difference operator"""
+    """Adds constraints for the multiplication operator"""
 
-    def build(self, val_node: pyo.Var, op_bin_var: dict):
-        """Function containing operator-specific constraints"""
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
         srm = self.symbolic_regression_model
         vlb, vub = srm.var_bounds["lb"], srm.var_bounds["ub"]
         product_values = [
@@ -132,12 +132,11 @@ class MultOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
 
-@declare_custom_block("DivOperator")
+@declare_custom_block("DivOperator", OPTION_NAMES)
 class DivOperatorData(BaseOperatorData):
-    """Template for difference operator"""
+    """Adds constraints for the division operator"""
 
-    def build(self, val_node: pyo.Var, op_bin_var: dict):
-        """Function containing operator-specific constraints"""
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
         srm = self.symbolic_regression_model
         vlb, vub = srm.var_bounds["lb"], srm.var_bounds["ub"]
         eps = srm.eps_value
@@ -165,24 +164,23 @@ class DivOperatorData(BaseOperatorData):
         def avoid_zero_constraint(_, n):
             # Ensures that the denominator is away from zero
             # return eps * op_bin_var[n] <= val_node[2 * n + 1] ** 2
-            return op_bin_var[n] * val_node[2 * n + 1] ** 2 >= op_bin_var[n] - 1 + eps
+            return val_node[2 * n + 1] ** 2 >= op_bin_var[n] - 1 + eps
 
     def construct_convex_relaxation(self):
         raise NotImplementedError()
 
 
-@declare_custom_block("SqrtOperator")
+@declare_custom_block("SqrtOperator", OPTION_NAMES)
 class SqrtOperatorData(BaseOperatorData):
-    """Template for difference operator"""
+    """Adds constraints for the square root operator"""
 
-    def build(self, val_node: pyo.Var, op_bin_var: dict):
-        """Function containing operator-specific constraints"""
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
         srm = self.symbolic_regression_model
         vlb, vub = srm.var_bounds["lb"], srm.var_bounds["ub"]
 
         @self.Constraint(srm.non_terminal_nodes_set)
         def upper_bound_constraint(_, n):
-            bigm = max(vlb**2, vub**2) - vlb
+            bigm = max(pyo.value(vlb * vlb), pyo.value(vub * vub)) - vlb
             return val_node[n] ** 2 - val_node[2 * n + 1] <= bigm * (1 - op_bin_var[n])
 
         @self.Constraint(srm.non_terminal_nodes_set)
@@ -192,20 +190,17 @@ class SqrtOperatorData(BaseOperatorData):
 
         @self.Constraint(srm.non_terminal_modes_set)
         def non_negativity_constraint(_, n):
-            # Ensures that the denominator is away from zero
-            # return eps * op_bin_var[n] <= val_node[2 * n + 1] ** 2
-            return op_bin_var[n] * val_node[2 * n + 1] >= 0
+            return val_node[2 * n + 1] >= (1 - op_bin_var[n]) * vlb
 
     def construct_convex_relaxation(self):
         raise NotImplementedError()
 
 
-@declare_custom_block("ExpOperator")
+@declare_custom_block("ExpOperator", OPTION_NAMES)
 class ExpOperatorData(BaseOperatorData):
-    """Template for difference operator"""
+    """Adds constraints for the exponential operator"""
 
-    def build(self, val_node: pyo.Var, op_bin_var: dict):
-        """Function containing operator-specific constraints"""
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
         srm = self.symbolic_regression_model
         vlb, vub = srm.var_bounds["lb"], srm.var_bounds["ub"]
 
@@ -232,24 +227,20 @@ class ExpOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
 
-@declare_custom_block("LogOperator")
+@declare_custom_block("LogOperator", OPTION_NAMES)
 class LogOperatorData(BaseOperatorData):
-    """Template for difference operator"""
+    """Adds constraints for the logarithm operator"""
 
-    def build(self, val_node: pyo.Var, op_bin_var: dict):
-        """Function containing operator-specific constraints"""
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
         srm = self.symbolic_regression_model
         vlb, vub = srm.var_bounds["lb"], srm.var_bounds["ub"]
         eps = srm.eps_value
 
         # NOTE: Would this constrain the value of v[2*n+1]?
-        # Not certain about this logic. Need to doublecheck.
-        if vub - vlb >= 10:
-            _bigm = 1e5
-        elif pyo.exp(vub - vlb) < -1e-5:
-            _bigm = -1e5
+        if vub >= 10:
+            _bigm = 1e5 - vlb
         else:
-            _bigm = pyo.exp(vub - vlb)
+            _bigm = pyo.exp(vub) - vlb
 
         @self.Constraint(srm.non_terminal_nodes_set)
         def upper_bound_constraint(_, n):
@@ -274,12 +265,11 @@ class LogOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
 
-@declare_custom_block("SquareOperator")
+@declare_custom_block("SquareOperator", OPTION_NAMES)
 class SquareOperatorData(BaseOperatorData):
-    """Template for difference operator"""
+    """Adds constraints for the square operator"""
 
-    def build(self, val_node: pyo.Var, op_bin_var: dict):
-        """Function containing operator-specific constraints"""
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
         srm = self.symbolic_regression_model
         vlb, vub = srm.var_bounds["lb"], srm.var_bounds["ub"]
 
@@ -290,7 +280,7 @@ class SquareOperatorData(BaseOperatorData):
 
         @self.Constraint(srm.non_terminal_nodes_set)
         def lower_bound_constraint(_, n):
-            bigm = vlb - max(vlb**2, vub**2)
+            bigm = vlb - max(pyo.value(vlb * vlb), pyo.value(vub * vub))
             return val_node[n] - val_node[2 * n + 1] ** 2 >= bigm * (1 - op_bin_var[n])
 
     def construct_convex_relaxation(self):
@@ -320,7 +310,7 @@ class BigmSampleBlockData(BlockData):
         return self.parent_block()
 
     # pylint: disable=attribute-defined-outside-init
-    def build(self):
+    def build(self, *args):
         """Builds the expression tree for a given sample"""
         srm = self.symbolic_regression_model
         self.val_node = pyo.Var(
@@ -328,6 +318,29 @@ class BigmSampleBlockData(BlockData):
             bounds=(srm.var_bounds["lb"], srm.var_bounds["ub"]),
             doc="Value at each node",
         )
+
+        # Value defining constraints for operands
+        data = srm.input_data_ref.loc[args[0]]
+
+        @self.Constraint(srm.nodes_set)
+        def value_upper_bound_constraint(blk, n):
+            return blk.val_node[n] <= srm.constant_val[n] + sum(
+                data[op] * srm.select_operator[n, op]
+                for op in srm.operands_set
+                if op != "cst"
+            ) + srm.var_bounds["ub"] * sum(
+                srm.select_operator[n, op] for op in srm.operators_set
+            )
+
+        @self.Constraint(srm.nodes_set)
+        def value_lower_bound_constraint(blk, n):
+            return blk.val_node[n] >= srm.constant_val[n] + sum(
+                data[op] * srm.select_operator[n, op]
+                for op in srm.operands_set
+                if op != "cst"
+            ) + srm.var_bounds["lb"] * sum(
+                srm.select_operator[n, op] for op in srm.operators_set
+            )
 
         for op in srm.operators_set:
             # Get binary variables corresponding to the opeartor
@@ -337,10 +350,27 @@ class BigmSampleBlockData(BlockData):
             setattr(
                 self,
                 op + "_operator",
-                BIGM_OPERATORS[op](
-                    model_options={
-                        "val_node": self.val_node,
-                        "op_bin_var": op_bin_vars,
-                    }
-                ),
+                BIGM_OPERATORS[op](val_node=self.val_node, op_bin_var=op_bin_vars),
+            )
+
+        self.residual = pyo.Var(doc="Residual value for the sample")
+        self.calculate_residual = pyo.Constraint(
+            expr=self.residual == srm.output_data_ref[self.index()] - self.val_node[1],
+            doc="Computes the residual between prediction and the data",
+        )
+        self.square_of_residual = pyo.Expression(expr=self.residual**2)
+
+    def add_symmetry_breaking_cuts(self):
+        """Adds symmetry breaking cuts to the sample"""
+        srm = self.symbolic_regression_model
+        vlb, vub = srm.var_bounds["lb"], srm.var_bounds["ub"]
+        symmetric_operators = [
+            op for op in ["sum", "mult"] if op in srm.binary_operators_set
+        ]
+
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def symmetry_breaking_constraints(blk, n):
+            return (blk.val_node[2 * n] - blk.val_node[2 * n + 1]) >= (vlb - vub) * (
+                srm.select_node[n]
+                - sum(srm.select_operator[n, op] for op in symmetric_operators)
             )

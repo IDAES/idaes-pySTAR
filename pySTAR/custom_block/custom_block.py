@@ -59,7 +59,7 @@ class CustomBlock(Block):
     """The base class used by instances of custom block components"""
 
     def __init__(self, *args, **kwargs):
-        config = kwargs.pop("model_options", {})
+        config = {key: kwargs.pop(key) for key in self._build_options if key in kwargs}
         kwargs.setdefault("rule", _default_rule(config))
 
         if self._default_ctype is not None:
@@ -84,7 +84,7 @@ class CustomBlock(Block):
             return super().__new__(cls._indexed_custom_block, *args, **kwargs)
 
 
-def declare_custom_block(name):
+def declare_custom_block(name, model_options=None):
     """Decorator to declare components for a custom block data class
 
     >>> @declare_custom_block(name="FooBlock")
@@ -115,6 +115,7 @@ def declare_custom_block(name):
                 "_ComponentDataClass": block_data,
                 # By default this new block does not declare a new ctype
                 "_default_ctype": None,
+                "_build_options": [] if model_options is None else model_options,
             },
         )
 

@@ -1,8 +1,13 @@
-from typing import Optional
+from typing import List, Optional
 import pandas as pd
 import pyomo.environ as pyo
 from pyomo.environ import Var, Constraint
-from pySTAR.operators.operators import BaseOperatorData, SampleBlock
+
+# pylint: disable = no-name-in-module
+from bigm_operators import (
+    BigmSampleBlock,
+    BaseOperatorData as BigmOperatorData,
+)
 
 
 class SymbolicRegressionModel(pyo.ConcreteModel):
@@ -12,7 +17,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         self,
         *args,
         data: pd.DataFrame,
-        input_columns: list,
+        input_columns: List[str],
         output_column: str,
         tree_depth: int,
         unary_operators: Optional[list] = None,
@@ -20,6 +25,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         var_bounds: tuple = (-100, 100),
         constant_bounds: tuple = (-100, 100),
         eps: float = 1e-4,
+        model_type: str = "bigm",
         **kwds,
     ):
         super().__init__(*args, **kwds)
@@ -33,7 +39,10 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             binary_operators = ["sum", "diff", "mult", "div"]
 
         # Save a reference to the input and output data
-        self.input_data_ref = data[input_columns]
+        _col_name_map = {
+            _name: f"x{index + 1}" for index, _name in enumerate(input_columns)
+        }
+        self.input_data_ref = data[input_columns].rename(columns=_col_name_map)
         self.output_data_ref = data[output_column]
         self.var_bounds = pyo.Param(
             ["lb", "ub"],
@@ -42,9 +51,8 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         self.constant_bounds = pyo.Param(
             ["lb", "ub"],
             initialize={"lb": constant_bounds[0], "ub": constant_bounds[1]},
-            mutable=True,
         )
-        self.eps_val = pyo.Param(initialize=eps, mutable=True, domain=pyo.PositiveReals)
+        self.eps_val = pyo.Param(initialize=eps, domain=pyo.PositiveReals)
         self.min_tree_size = pyo.Param(
             initialize=1,
             mutable=True,
@@ -63,7 +71,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         self.binary_operators_set = pyo.Set(initialize=binary_operators)
         self.unary_operators_set = pyo.Set(initialize=unary_operators)
         self.operators_set = self.binary_operators_set.union(self.unary_operators_set)
-        self.operands_set = pyo.Set(initialize=input_columns + ["cst"])
+        self.operands_set = pyo.Set(initialize=list(_col_name_map.values()) + ["cst"])
         self.collective_operator_set = self.operators_set.union(self.operands_set)
 
         self.non_terminal_nodes_set = pyo.RangeSet(2 ** (tree_depth - 1) - 1)
@@ -74,7 +82,12 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         self._build_expression_tree_model()
 
         # Calculate the output value for each sample
-        self.samples = SampleBlock(self.input_data_ref.index.to_list())
+        if model_type == "bigm":
+            self.samples = BigmSampleBlock(self.input_data_ref.index.to_list())
+        elif model_type == "hull":
+            pass
+        else:
+            raise ValueError(f"model_type: {model_type} is not recognized.")
 
     def _build_expression_tree_model(self):
         """Builds constraints that return a valid expression tree"""
@@ -154,7 +167,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         """
         if objective_type == "sse":
             # build SSR objective
-            self.sse = pyo.Objective(expr=sum(self.samples[:].square_of_error))
+            self.sse = pyo.Objective(expr=sum(self.samples[:].square_of_residual))
 
         elif objective_type == "bic":
             # Build BIC objective
@@ -190,26 +203,68 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             # cuts to the first sample
             sample_name = self.input_data_ref.iloc[0].name
 
-        blk = self.samples[sample_name]
-        symmetric_operators = [
-            op for op in ["sum", "mult"] if op in self.binary_operators_set
-        ]
+        self.samples[sample_name].add_symmetry_breaking_cuts()
 
     def add_implication_cuts(self):
         """
         Adds cuts to avoid a certain combinations of operators based on the input data
         """
+        # Avoid division by zero
+        near_zero_operands, negative_operands = _get_operand_domains(
+            data=self.input_data_ref, tol=pyo.value(self.eps_val)
+        )
 
-    def add_tree_size_constraint(self, size: int):
-        """Adds a constraint to constrain the size of the tree"""
+        if len(near_zero_operands) > 0 and "div" in self.binary_operators_set:
+            print("Data for one/more operands is close to zero")
+
+            @self.Constraint(self.non_terminal_nodes_set, near_zero_operands)
+            def implication_cuts_div_operator(blk, n, op):
+                return (
+                    blk.select_operator[n, "div"] + blk.select_operator[2 * n + 1, op]
+                    <= blk.select_node[n]
+                )
+
+        if len(negative_operands) > 0 and "sqrt" in self.unary_operators_set:
+            print("Data for one/more operands is negative")
+
+            @self.Constraint(self.non_terminal_nodes_set, negative_operands)
+            def implication_cuts_sqrt_operator(blk, n, op):
+                return (
+                    blk.select_operator[n, "sqrt"] + blk.select_operator[2 * n + 1, op]
+                    <= blk.select_node[n]
+                )
+
+        non_positive_operands = list(set(near_zero_operands + negative_operands))
+        if len(non_positive_operands) > 0 and "log" in self.unary_operators_set:
+            print("Data for one/more operands is negative")
+
+            @self.Constraint(self.non_terminal_nodes_set, non_positive_operands)
+            def implication_cuts_log_operator(blk, n, op):
+                return (
+                    blk.select_operator[n, "log"] + blk.select_operator[2 * n + 1, op]
+                    <= blk.select_node[n]
+                )
+
+    def constrain_max_tree_size(self, size: int):
+        """Adds a constraint to constrain the maximum size of the tree"""
         self.max_tree_size = size
 
         # If the constraint exists, then updating the parameter value is sufficient
         # pylint: disable = attribute-defined-outside-init
-        if not hasattr(self, "tree_size_con"):
-            self.tree_size_constraint = Constraint(
-                expr=sum(self.select_node[n] for n in self.nodes_set)
-                <= self.max_tree_size
+        if not hasattr(self, "max_tree_size_constraint"):
+            self.max_tree_size_constraint = Constraint(
+                expr=sum(self.select_node[:]) <= self.max_tree_size
+            )
+
+    def constrain_min_tree_size(self, size: int):
+        """Adds a constraint to constrain the minimum size of the tree"""
+        self.min_tree_size = size
+
+        # If the constraint exists, then updating the parameter value is sufficient
+        # pylint: disable = attribute-defined-outside-init
+        if not hasattr(self, "min_tree_size_constraint"):
+            self.min_tree_size_constraint = Constraint(
+                expr=sum(self.select_node[:]) >= self.min_tree_size
             )
 
     def relax_integrality_constraints(self):
@@ -225,7 +280,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
     def relax_nonconvex_constraints(self):
         """Convexifies all non-convex nonlinear constraints"""
         for blk in self.component_data_objects(pyo.Block):
-            if isinstance(blk, BaseOperatorData):
+            if isinstance(blk, BigmOperatorData):
                 blk.construct_convex_relaxation()
 
     def get_selected_operators(self):
@@ -237,3 +292,17 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
     def selected_tree_to_expression(self):
         """Returns the optimal expression as a string"""
+
+
+def _get_operand_domains(data: pd.DataFrame, tol: float):
+    near_zero_operands = []
+    negative_operands = []
+
+    for op in data.columns:
+        if (abs(data[op]) < tol).any():
+            near_zero_operands.append(op)
+
+        if (data[op] < 0).any():
+            negative_operands.append(op)
+
+    return near_zero_operands, negative_operands
