@@ -1,3 +1,4 @@
+import pandas as pd
 from pyomo.core.expr.sympy_tools import PyomoSympyBimap, sympy2pyomo_expression
 import pyomo.environ as pyo
 import sympy as sp
@@ -96,8 +97,12 @@ class Node:
 class ExpressionTree:
     """Constructs a binary tree for a given expression"""
 
-    def __init__(self, tree: list):
-        self.tree = dict(tree)
+    def __init__(self, tree: list | dict):
+        if isinstance(tree, list):
+            self.tree = dict(tree)
+        else:  # This must be a dict
+            self.tree = tree
+
         # Add subscripts to constants
         for _node, _op in self.tree.items():
             if _op == "cst":
@@ -144,5 +149,59 @@ class ExpressionTree:
         m.calculate_output_var = pyo.Constraint(
             expr=m.output_var == sympy2pyomo_expression(expr=expr, object_map=psm)
         )
+
+        return m
+
+    def get_parameter_estimation_model(self, data: pd.DataFrame):
+        """Constructs the parameter estimation model for the given data"""
+        expr_model = self.get_pyomo_model()
+        var_list = [v.name for v in expr_model.component_data_objects(pyo.Var)]
+        var_list.remove("output_var")  # Removing output variable
+
+        # NOTE: Change print messages to logger warning/info later
+        # List of parameters that we need to estimate
+        param_list = [v for v in var_list if v not in data.columns]
+        print(f"List of parameters in the expression: {param_list}")
+
+        m = pyo.ConcreteModel()
+
+        # Construct the expression for each sample
+        m.sample = pyo.Block(data.index.to_list())
+        for s in m.sample:
+            # Declare variables and expression using the clone method
+            m.sample[s].transfer_attributes_from(expr_model.clone())
+            blk = m.sample[s]  # Pointer to the sample model
+
+            # Fix variable values
+            # Ensure that variables are present in the expression
+            for v in data.columns:
+                if v == "y":
+                    # This is output data, so skip
+                    continue
+
+                if v not in var_list:
+                    print(f"Variable {v} is not found in the expression!")
+                else:
+                    # Variable is present in the expression. Fix its value
+                    getattr(blk, v).fix(data.loc[s, v])
+
+            # Calculate residual
+            blk.residual = pyo.Var()
+            blk.calculate_residual = pyo.Constraint(
+                expr=blk.residual == blk.output_var - data.loc[s, "y"]
+            )
+            blk.square_of_residual = pyo.Expression(expr=blk.residual**2)
+
+        # Define variables for parameters in the main model for adding
+        # non-anticipativity constraints
+        for v in param_list:
+            setattr(m, v, pyo.Var())
+
+        @m.Constraint(param_list, m.sample.index_set())
+        def non_anticipativity_constraints(blk, v, s):
+            return getattr(m, v) == getattr(blk.sample[s], v)
+
+        # Add an objective
+        m.sse = pyo.Objective(expr=sum(m.sample[:].square_of_residual))
 
         return m
