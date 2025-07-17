@@ -4,13 +4,12 @@ for symbolic regression. The operator constraints are implemented using
 the big-m approach
 """
 
+import pandas as pd
+from pyomo.core.base.block import BlockData, declare_custom_block
 import pyomo.environ as pyo
-from custom_block.custom_block import BlockData, declare_custom_block
-
-OPTION_NAMES = ["val_node", "op_bin_var"]
 
 
-@declare_custom_block("BaseOperator", model_options=OPTION_NAMES)
+@declare_custom_block("BaseOperator", rule="build")
 class BaseOperatorData(BlockData):
     """Operator template for big-m type constraints"""
 
@@ -46,8 +45,13 @@ class BaseOperatorData(BlockData):
         """Constructs a convex relaxation of the operator-specific constraints"""
         raise NotImplementedError()
 
+    @staticmethod
+    def compute_node_value(right_child: float, left_child: float):
+        """Computes the value at a node based on the operator"""
+        raise NotImplementedError()
 
-@declare_custom_block("SumOperator", OPTION_NAMES)
+
+@declare_custom_block("SumOperator", rule="build")
 class SumOperatorData(BaseOperatorData):
     """Adds constraints for the addition operator"""
 
@@ -73,8 +77,12 @@ class SumOperatorData(BaseOperatorData):
         # Constraints are convex, so returning the block as it is
         pass
 
+    @staticmethod
+    def compute_node_value(right_child, left_child):
+        return right_child + left_child
 
-@declare_custom_block("DiffOperator", OPTION_NAMES)
+
+@declare_custom_block("DiffOperator", rule="build")
 class DiffOperatorData(BaseOperatorData):
     """Adds constraints for the difference operator"""
 
@@ -100,8 +108,12 @@ class DiffOperatorData(BaseOperatorData):
         # Constraints are convex, so returning the block as it is
         pass
 
+    @staticmethod
+    def compute_node_value(right_child, left_child):
+        return right_child - left_child
 
-@declare_custom_block("MultOperator", OPTION_NAMES)
+
+@declare_custom_block("MultOperator", rule="build")
 class MultOperatorData(BaseOperatorData):
     """Adds constraints for the multiplication operator"""
 
@@ -131,8 +143,12 @@ class MultOperatorData(BaseOperatorData):
     def construct_convex_relaxation(self):
         raise NotImplementedError()
 
+    @staticmethod
+    def compute_node_value(right_child, left_child):
+        return right_child * left_child
 
-@declare_custom_block("DivOperator", OPTION_NAMES)
+
+@declare_custom_block("DivOperator", rule="build")
 class DivOperatorData(BaseOperatorData):
     """Adds constraints for the division operator"""
 
@@ -160,7 +176,7 @@ class DivOperatorData(BaseOperatorData):
                 1 - op_bin_var[n]
             )
 
-        @self.Constraint(srm.non_terminal_modes_set)
+        @self.Constraint(srm.non_terminal_nodes_set)
         def avoid_zero_constraint(_, n):
             # Ensures that the denominator is away from zero
             # return eps * op_bin_var[n] <= val_node[2 * n + 1] ** 2
@@ -169,8 +185,12 @@ class DivOperatorData(BaseOperatorData):
     def construct_convex_relaxation(self):
         raise NotImplementedError()
 
+    @staticmethod
+    def compute_node_value(right_child, left_child):
+        return right_child / left_child
 
-@declare_custom_block("SqrtOperator", OPTION_NAMES)
+
+@declare_custom_block("SqrtOperator", rule="build")
 class SqrtOperatorData(BaseOperatorData):
     """Adds constraints for the square root operator"""
 
@@ -188,15 +208,19 @@ class SqrtOperatorData(BaseOperatorData):
             bigm = -vub
             return val_node[n] ** 2 - val_node[2 * n + 1] >= bigm * (1 - op_bin_var[n])
 
-        @self.Constraint(srm.non_terminal_modes_set)
+        @self.Constraint(srm.non_terminal_nodes_set)
         def non_negativity_constraint(_, n):
             return val_node[2 * n + 1] >= (1 - op_bin_var[n]) * vlb
 
     def construct_convex_relaxation(self):
         raise NotImplementedError()
 
+    @staticmethod
+    def compute_node_value(_, left_child):
+        return pyo.sqrt(left_child)
 
-@declare_custom_block("ExpOperator", OPTION_NAMES)
+
+@declare_custom_block("ExpOperator", rule="build")
 class ExpOperatorData(BaseOperatorData):
     """Adds constraints for the exponential operator"""
 
@@ -226,8 +250,12 @@ class ExpOperatorData(BaseOperatorData):
     def construct_convex_relaxation(self):
         raise NotImplementedError()
 
+    @staticmethod
+    def compute_node_value(_, left_child):
+        return pyo.exp(left_child)
 
-@declare_custom_block("LogOperator", OPTION_NAMES)
+
+@declare_custom_block("LogOperator", rule="build")
 class LogOperatorData(BaseOperatorData):
     """Adds constraints for the logarithm operator"""
 
@@ -255,7 +283,7 @@ class LogOperatorData(BaseOperatorData):
                 1 - op_bin_var[n]
             )
 
-        @self.Constraint(srm.non_terminal_modes_set)
+        @self.Constraint(srm.non_terminal_nodes_set)
         def avoid_zero_constraint(_, n):
             # Ensures that the denominator is away from zero
             # return eps * op_bin_var[n] <= val_node[2 * n + 1] ** 2
@@ -264,8 +292,12 @@ class LogOperatorData(BaseOperatorData):
     def construct_convex_relaxation(self):
         raise NotImplementedError()
 
+    @staticmethod
+    def compute_node_value(_, left_child):
+        return pyo.log(left_child)
 
-@declare_custom_block("SquareOperator", OPTION_NAMES)
+
+@declare_custom_block("SquareOperator", rule="build")
 class SquareOperatorData(BaseOperatorData):
     """Adds constraints for the square operator"""
 
@@ -286,6 +318,10 @@ class SquareOperatorData(BaseOperatorData):
     def construct_convex_relaxation(self):
         raise NotImplementedError()
 
+    @staticmethod
+    def compute_node_value(_, left_child):
+        return left_child**2
+
 
 # pylint: disable = undefined-variable
 BIGM_OPERATORS = {
@@ -300,7 +336,7 @@ BIGM_OPERATORS = {
 }
 
 
-@declare_custom_block("BigmSampleBlock")
+@declare_custom_block("BigmSampleBlock", rule="build")
 class BigmSampleBlockData(BlockData):
     """Class for evaluating the expression tree for each sample"""
 
@@ -346,7 +382,7 @@ class BigmSampleBlockData(BlockData):
             # Get binary variables corresponding to the opeartor
             # and save them in a dictionary. Here, the keys are node
             # numbers and the values are Var objects.
-            op_bin_vars = dict(srm.select_operator[:, op].wildcard_items())
+            op_bin_vars = {n: srm.select_operator[n, op] for n in srm.nodes_set}
             setattr(
                 self,
                 op + "_operator",
@@ -374,3 +410,30 @@ class BigmSampleBlockData(BlockData):
                 srm.select_node[n]
                 - sum(srm.select_operator[n, op] for op in symmetric_operators)
             )
+
+    def compare_node_values(self):
+        """Compares the node values obtained from the model and manual calculation"""
+        srm = self.symbolic_regression_model
+        data = srm.input_data_ref.loc[self.index()]
+        true_value = {
+            n: srm.constant_val[n].value
+            + sum(
+                data[op] * srm.select_operator[n, op].value
+                for op in srm.operands_set
+                if op != "cst"
+            )
+            for n in srm.nodes_set
+        }
+        for n in range(len(srm.non_terminal_nodes_set), 0, -1):
+            for op in srm.operators_set:
+                if srm.select_operator[n, op].value > 0.99:
+                    # Operator is selector
+                    true_value[n] += getattr(self, op + "_operator").compute_node_value(
+                        true_value[2 * n], true_value[2 * n + 1]
+                    )
+
+        computed_value = {n: self.val_node[n].value for n in self.val_node}
+
+        return pd.DataFrame.from_dict(
+            {"True Value": true_value, "Computed Value": computed_value}
+        )

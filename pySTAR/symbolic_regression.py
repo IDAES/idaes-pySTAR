@@ -52,7 +52,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             ["lb", "ub"],
             initialize={"lb": constant_bounds[0], "ub": constant_bounds[1]},
         )
-        self.eps_val = pyo.Param(initialize=eps, domain=pyo.PositiveReals)
+        self.eps_value = pyo.Param(initialize=eps, domain=pyo.PositiveReals)
         self.min_tree_size = pyo.Param(
             initialize=1,
             mutable=True,
