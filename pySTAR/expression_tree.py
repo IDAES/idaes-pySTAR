@@ -121,6 +121,12 @@ class ExpressionTree:
     def __str__(self):
         return str(self.nodes[1])
 
+    def __add__(self,et):
+        return self.sympy_expression + et.sympy_expression
+    
+    def __sub__(self,et):
+        return self.sympy_expression - et.sympy_expression
+
     @property
     def sympy_expression(self):
         """Returns the sympy expression"""
