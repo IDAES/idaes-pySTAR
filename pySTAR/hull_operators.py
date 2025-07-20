@@ -4,17 +4,14 @@ for symbolic regression.
 """
 
 import logging
-from pyomo.core.base.block import BlockData
+from pyomo.core.base.block import BlockData, declare_custom_block
 from pyomo.environ import Var, Constraint
 import pyomo.environ as pyo
-
-from pySTAR.operators.custom_block import declare_custom_block
-from pySTAR.operators.relaxation import mccormick_relaxation
 
 LOGGER = logging.getLogger(__name__)
 
 
-@declare_custom_block("BaseOperator")
+@declare_custom_block("BaseOperator", rule="build")
 class BaseOperatorData(BlockData):
     """Base class for defining operator models"""
 
@@ -157,10 +154,7 @@ class MultOperatorData(BaseOperatorData):
         self.add_bound_constraints()
 
     def construct_convex_relaxation(self):
-        self.evaluate_val_node.deactivate()
-        mccormick_relaxation(
-            self, z=self.val_node, x=self.val_left_node, y=self.val_right_node
-        )
+        raise NotImplementedError()
 
 
 @declare_custom_block("DivOperator")
@@ -176,17 +170,7 @@ class DivOperatorData(BaseOperatorData):
         self.add_bound_constraints(val_right_node=False)
 
     def construct_convex_relaxation(self):
-        self.evaluate_val_node.deactivate()
-        self.calculate_val_right_node.deactivate()
-        mccormick_relaxation(
-            self, z=self.val_left_node, x=self.val_node, y=self.aux_var_right
-        )
-        mccormick_relaxation(
-            self,
-            z=self.val_right_node,
-            x=self.get_operator_binary_var(),
-            y=self.aux_var_right,
-        )
+        raise NotImplementedError()
 
 
 # pylint: disable = no-member
@@ -206,17 +190,6 @@ class SquareOperatorData(BaseOperatorData):
         )
 
     def construct_convex_relaxation(self):
-        # Need to implement outer-approximation
-        # Update bounds on val_node and val_right_node variables
-        ub_val_node = self.val_node.ub
-        ub_val_right_node = self.val_right_node.ub
-        lb_val_right_node = self.val_right_node.lb
-
-        self.val_node.setub(min(ub_val_node, ub_val_right_node**2))
-        self.val_right_node.setub(min(pyo.sqrt(ub_val_node), ub_val_right_node))
-        self.val_node.setlb(0)
-        self.val_right_node.setlb(max(-pyo.sqrt(ub_val_node), lb_val_right_node))
-
         raise NotImplementedError()
 
 
@@ -236,18 +209,6 @@ class SqrtOperatorData(BaseOperatorData):
         )
 
     def construct_convex_relaxation(self):
-        # Make the domain of the variable non-negative
-        ub_val_node = self.val_node.ub
-        ub_val_right_node = self.val_right_node.ub
-
-        self.val_node.setub(min(ub_val_node, pyo.sqrt(ub_val_right_node)))
-        self.val_right_node.setub(min(ub_val_node**2, ub_val_right_node))
-        self.val_right_node.setlb(0)
-        self.val_node.setlb(0)
-
-        self.del_component(self.node_val_lb_con)
-        self.del_component(self.right_node_val_lb_con)
-
         raise NotImplementedError()
 
 
@@ -323,8 +284,10 @@ OPERATOR_MODELS = {
 }
 
 
-@declare_custom_block("SampleBlock")
-class SampleBlockData(BlockData):
+@declare_custom_block("HullSampleBlock", rule="build")
+class HullSampleBlockData(BlockData):
+    """Class for evaluating the expression tree for each sample"""
+
     def build(self, s):
         """rule for building the expression model for each sample"""
         pb = self.parent_block()
@@ -362,7 +325,7 @@ class SampleBlockData(BlockData):
                 setattr(
                     self.node[n],
                     "op_" + op,
-                    OPERATOR_MODELS[op](config={"bin_var": pb.select_operator[n, op]}),
+                    OPERATOR_MODELS[op](bin_var=pb.select_operator[n, op]),
                 )
                 op_blocks.append(getattr(self.node[n], "op_" + op))
 
@@ -381,6 +344,9 @@ class SampleBlockData(BlockData):
                 == sum(blk.val_right_node for blk in op_blocks)
             )
 
-        self.square_of_error = pyo.Expression(
-            expr=(self.node[1].val_node - output_value) ** 2
+        self.residual = pyo.Var(doc="Residual value for the sample")
+        self.calculate_residual = pyo.Constraint(
+            expr=self.residual == output_value - self.node[1].val_node,
+            doc="Computes the residual between prediction and the data",
         )
+        self.square_of_residual = pyo.Expression(expr=self.residual**2)

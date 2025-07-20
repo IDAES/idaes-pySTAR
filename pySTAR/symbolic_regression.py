@@ -1,15 +1,19 @@
+import logging
 from typing import List, Optional
 import pandas as pd
 import pyomo.environ as pyo
 from pyomo.environ import Var, Constraint
 
-# pylint: disable = no-name-in-module
-from bigm_operators import (
-    BigmSampleBlock,
-    BaseOperatorData as BigmOperatorData,
-)
+# pylint: disable = import-error
+from bigm_operators import BigmSampleBlock
+from hull_operators import HullSampleBlock
+
+LOGGER = logging.getLogger(__name__)
+SUPPORTED_UNARY_OPS = ["square", "sqrt", "log", "exp"]
+SUPPORTED_BINARY_OPS = ["sum", "diff", "mult", "div"]
 
 
+# pylint: disable = logging-fstring-interpolation
 class SymbolicRegressionModel(pyo.ConcreteModel):
     """Builds the symbolic regression model for a given data"""
 
@@ -20,8 +24,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         input_columns: List[str],
         output_column: str,
         tree_depth: int,
-        unary_operators: Optional[list] = None,
-        binary_operators: Optional[list] = None,
+        operators: Optional[list] = None,
         var_bounds: tuple = (-100, 100),
         constant_bounds: tuple = (-100, 100),
         eps: float = 1e-4,
@@ -30,13 +33,29 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
     ):
         super().__init__(*args, **kwds)
 
-        if unary_operators is None:
-            # If not specified, use all supported unary operators
-            unary_operators = ["square", "sqrt", "exp", "log"]
+        # Check if the received operators are supported or not
+        if operators is None:
+            # If not specified, use all supported operators
+            unary_operators = SUPPORTED_UNARY_OPS
+            binary_operators = SUPPORTED_BINARY_OPS
 
-        if binary_operators is None:
-            # If not specified, use all supported binary operators
-            binary_operators = ["sum", "diff", "mult", "div"]
+        else:
+            # Ensure that there are no duplicates in the list of operators
+            if len(operators) != len(set(operators)):
+                raise ValueError("Duplicates are present in the list of operators")
+
+            unary_operators = []
+            binary_operators = []
+            for op in operators:
+                if op in SUPPORTED_UNARY_OPS:
+                    unary_operators.append(op)
+                elif op in SUPPORTED_BINARY_OPS:
+                    binary_operators.append(op)
+                else:
+                    raise ValueError(f"Operator {op} is not recognized!")
+
+        LOGGER.info(f"Using {unary_operators} unary operators.")
+        LOGGER.info(f"Using {binary_operators} binary operators.")
 
         # Save a reference to the input and output data
         _col_name_map = {
@@ -85,7 +104,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         if model_type == "bigm":
             self.samples = BigmSampleBlock(self.input_data_ref.index.to_list())
         elif model_type == "hull":
-            pass
+            self.samples = HullSampleBlock(self.input_data_ref.index.to_list())
         else:
             raise ValueError(f"model_type: {model_type} is not recognized.")
 
@@ -155,7 +174,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             )
 
     # pylint: disable = attribute-defined-outside-init
-    def add_objective(self, objective_type="sse"):
+    def add_objective(self, objective_type: str = "sse"):
         """Appends objective function to the model
 
         Parameters
@@ -171,7 +190,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
         elif objective_type == "bic":
             # Build BIC objective
-            pass
+            raise NotImplementedError("BIC is not supported currently")
 
         else:
             raise ValueError(
@@ -211,11 +230,15 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         """
         # Avoid division by zero
         near_zero_operands, negative_operands = _get_operand_domains(
-            data=self.input_data_ref, tol=pyo.value(self.eps_val)
+            data=self.input_data_ref, tol=pyo.value(self.eps_value)
         )
 
+        # pylint: disable = logging-fstring-interpolation
         if len(near_zero_operands) > 0 and "div" in self.binary_operators_set:
-            print("Data for one/more operands is close to zero")
+            LOGGER.info(
+                f"Data for operands {near_zero_operands} is close to zero. "
+                f"Adding cuts to prevent division with these operands."
+            )
 
             @self.Constraint(self.non_terminal_nodes_set, near_zero_operands)
             def implication_cuts_div_operator(blk, n, op):
@@ -225,7 +248,10 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
                 )
 
         if len(negative_operands) > 0 and "sqrt" in self.unary_operators_set:
-            print("Data for one/more operands is negative")
+            LOGGER.info(
+                f"Data for operands {negative_operands} is negative. "
+                f"Adding cuts to prevent sqrt of these operands."
+            )
 
             @self.Constraint(self.non_terminal_nodes_set, negative_operands)
             def implication_cuts_sqrt_operator(blk, n, op):
@@ -236,7 +262,10 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
         non_positive_operands = list(set(near_zero_operands + negative_operands))
         if len(non_positive_operands) > 0 and "log" in self.unary_operators_set:
-            print("Data for one/more operands is negative")
+            LOGGER.info(
+                f"Data for operands {non_positive_operands} is non-positive. "
+                f"Adding cuts to prevent log of these operands."
+            )
 
             @self.Constraint(self.non_terminal_nodes_set, non_positive_operands)
             def implication_cuts_log_operator(blk, n, op):
@@ -253,7 +282,8 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         # pylint: disable = attribute-defined-outside-init
         if not hasattr(self, "max_tree_size_constraint"):
             self.max_tree_size_constraint = Constraint(
-                expr=sum(self.select_node[:]) <= self.max_tree_size
+                expr=sum(self.select_node[n] for n in self.nodes_set)
+                <= self.max_tree_size
             )
 
     def constrain_min_tree_size(self, size: int):
@@ -264,7 +294,8 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         # pylint: disable = attribute-defined-outside-init
         if not hasattr(self, "min_tree_size_constraint"):
             self.min_tree_size_constraint = Constraint(
-                expr=sum(self.select_node[:]) >= self.min_tree_size
+                expr=sum(self.select_node[n] for n in self.nodes_set)
+                >= self.min_tree_size
             )
 
     def relax_integrality_constraints(self):
@@ -279,9 +310,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
     def relax_nonconvex_constraints(self):
         """Convexifies all non-convex nonlinear constraints"""
-        for blk in self.component_data_objects(pyo.Block):
-            if isinstance(blk, BigmOperatorData):
-                blk.construct_convex_relaxation()
+        raise NotImplementedError("Model Convexification is not currently supported")
 
     def get_selected_operators(self):
         """

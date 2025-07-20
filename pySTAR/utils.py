@@ -1,12 +1,13 @@
 from gurobipy import nlfunc
 import pyomo.environ as pyo
-from pySTAR.bigm_operators import LogOperatorData, ExpOperatorData
+from bigm_operators import LogOperatorData as BigmLog, ExpOperatorData as BigmExp
+from hull_operators import LogOperatorData as HullLog, ExpOperatorData as HullExp
 from pySTAR.symbolic_regression import SymbolicRegressionModel
 
 
 def _bigm_gurobi_formulation(srm: SymbolicRegressionModel):
     for blk in srm.component_data_objects(pyo.Block):
-        if isinstance(blk, (LogOperatorData, ExpOperatorData)):
+        if isinstance(blk, (BigmLog, BigmExp)):
             # Deactivate the block
             blk.deactivate()
 
@@ -17,10 +18,10 @@ def _bigm_gurobi_formulation(srm: SymbolicRegressionModel):
     vlb, vub = srm.var_bounds["lb"], srm.var_bounds["ub"]
 
     for blk in srm.component_data_objects(pyo.Block):
-        if isinstance(blk, LogOperatorData):
+        if isinstance(blk, BigmLog):
             sb = blk.parent_block()  # Sample block
             val_node = sb.val_node
-            op_bin_var = dict(srm.select_operator[:, "log"].wildcard_items())
+            op_bin_var = {n: srm.select_operator[n, "log"] for n in srm.nodes_set}
 
             if vub >= 10:
                 _bigm = pyo.value(1e5 - vlb)
@@ -40,7 +41,7 @@ def _hull_gurobi_formulation(m: SymbolicRegressionModel):
     """Uses Gurobibpy interface to solve the MINLP"""
 
     for blk in m.component_data_objects(pyo.Block):
-        if isinstance(blk, (LogOperatorData, ExpOperatorData)):
+        if isinstance(blk, (HullLog, HullExp)):
             # Deactivate the nonlinear constraint
             blk.evaluate_val_node.deactivate()
 
@@ -51,7 +52,7 @@ def _hull_gurobi_formulation(m: SymbolicRegressionModel):
     pm_to_gm = grb._pyomo_var_to_solver_var_map
 
     for blk in m.component_data_objects(pyo.Block):
-        if isinstance(blk, LogOperatorData):
+        if isinstance(blk, HullLog):
             # Add the nonlinear constraint
             gm.addConstr(
                 pm_to_gm[blk.val_node]
@@ -59,7 +60,7 @@ def _hull_gurobi_formulation(m: SymbolicRegressionModel):
                 * nlfunc.log(pm_to_gm[blk.aux_var_right])
             )
 
-        elif isinstance(blk, ExpOperatorData):
+        elif isinstance(blk, HullExp):
             # Add the nonlinear constraint
             gm.addConstr(
                 pm_to_gm[blk.val_node]
@@ -72,7 +73,7 @@ def _hull_gurobi_formulation(m: SymbolicRegressionModel):
 
     # Activate the constraint back
     for blk in m.component_data_objects(pyo.Block):
-        if isinstance(blk, (LogOperatorData, ExpOperatorData)):
+        if isinstance(blk, (HullLog, HullExp)):
             # Deactivate the nonlinear constraint
             blk.evaluate_val_node.activate()
 
@@ -83,7 +84,7 @@ def get_gurobi(srm: SymbolicRegressionModel, options: dict | None = None):
     """Returns Gurobi solver object"""
     if options is None:
         # Set default termination criteria
-        options = {}
+        options = {"MIPGap": 0.01, "TimeLimit": 3600}
 
     if srm.method_type == "bigm":
         solver = _bigm_gurobi_formulation(srm)
