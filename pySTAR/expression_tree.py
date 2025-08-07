@@ -1,7 +1,11 @@
+import logging
 import pandas as pd
 from pyomo.core.expr.sympy_tools import PyomoSympyBimap, sympy2pyomo_expression
 import pyomo.environ as pyo
 import sympy as sp
+
+# pylint: disable = logging-fstring-interpolation
+_logger = logging.getLogger(__name__)
 
 
 class Node:
@@ -75,6 +79,8 @@ class Node:
 
     def unformatted_expression(self):
         """Returns the expression as is"""
+        # NOTE: This method is probably not helpful. Need to delete this method
+        # after finalizing the code.
         # This is a leaf node/operand
         if self.right_child is None and self.left_child is None:
             return f"{self.value}"
@@ -121,10 +127,10 @@ class ExpressionTree:
     def __str__(self):
         return str(self.nodes[1])
 
-    def __add__(self,et):
+    def __add__(self, et):
         return self.sympy_expression + et.sympy_expression
-    
-    def __sub__(self,et):
+
+    def __sub__(self, et):
         return self.sympy_expression - et.sympy_expression
 
     @property
@@ -137,7 +143,7 @@ class ExpressionTree:
         """Returns the simplified expression"""
         return self.nodes[1].simplified_expression
 
-    def get_pyomo_model(self):
+    def get_pyomo_model(self, cst_vars: dict | None = None):
         """Returns a model of the expression tree"""
         expr = self.sympy_expression  # sympy expression
         sympy_vars = list(expr.free_symbols)
@@ -146,8 +152,13 @@ class ExpressionTree:
         # Declare pyomo Vars for operands and constants
         m = pyo.ConcreteModel()
         for v in sympy_vars:
-            setattr(m, str(v), pyo.Var())
-            pyomo_var = getattr(m, str(v))
+            if cst_vars is None or str(v) not in cst_vars:
+                setattr(m, str(v), pyo.Var())
+                pyomo_var = getattr(m, str(v))
+
+            else:
+                pyomo_var = cst_vars[str(v)]
+
             psm.sympy2pyomo[v] = pyomo_var
             psm.pyomo2sympy[pyomo_var] = v
 
@@ -158,18 +169,38 @@ class ExpressionTree:
 
         return m
 
-    def get_parameter_estimation_model(self, data: pd.DataFrame):
+    def get_parameter_estimation_model(
+        self, data: pd.DataFrame, aggregate_cst_vars: bool = True
+    ):
         """Constructs the parameter estimation model for the given data"""
-        expr_model = self.get_pyomo_model()
-        var_list = [v.name for v in expr_model.component_data_objects(pyo.Var)]
-        var_list.remove("output_var")  # Removing output variable
-
-        # NOTE: Change print messages to logger warning/info later
-        # List of parameters that we need to estimate
+        # NOTE: Using same variables for all samples will yield a smaller
+        # problem, compared to adding duplicates for each sample and adding
+        # non-anticipativity constraints. So, we use the former approach by
+        # default. If there is no benefit to introducing variable copies,
+        # then we can remove support for the second approach.
+        var_list = [str(v) for v in self.sympy_expression.free_symbols]
         param_list = [v for v in var_list if v not in data.columns]
-        print(f"List of parameters in the expression: {param_list}")
+        valid_var_list = [v for v in data.columns if v in var_list]
+        invalid_var_list = [v for v in data.columns if v != "y" and v not in var_list]
+
+        _logger.info(f"List of parameters in the expression: {param_list}")
+        if len(invalid_var_list) > 0:
+            _logger.warning(
+                f"Variable(s) {invalid_var_list} is/are not found in the expression!"
+            )
 
         m = pyo.ConcreteModel()
+        # Define variables for parameters in the main model
+        for v in param_list:
+            setattr(m, v, pyo.Var())
+
+        if aggregate_cst_vars:
+            cst_vars = {v: getattr(m, v) for v in param_list}
+        else:
+            cst_vars = None
+
+        # Construct a pyomo model of the expression for cloning
+        expr_model = self.get_pyomo_model(cst_vars)
 
         # Construct the expression for each sample
         m.sample = pyo.Block(data.index.to_list())
@@ -179,17 +210,8 @@ class ExpressionTree:
             blk = m.sample[s]  # Pointer to the sample model
 
             # Fix variable values
-            # Ensure that variables are present in the expression
-            for v in data.columns:
-                if v == "y":
-                    # This is output data, so skip
-                    continue
-
-                if v not in var_list:
-                    print(f"Variable {v} is not found in the expression!")
-                else:
-                    # Variable is present in the expression. Fix its value
-                    getattr(blk, v).fix(data.loc[s, v])
+            for v in valid_var_list:
+                getattr(blk, v).fix(data.loc[s, v])
 
             # Calculate residual
             blk.residual = pyo.Var()
@@ -198,14 +220,12 @@ class ExpressionTree:
             )
             blk.square_of_residual = pyo.Expression(expr=blk.residual**2)
 
-        # Define variables for parameters in the main model for adding
-        # non-anticipativity constraints
-        for v in param_list:
-            setattr(m, v, pyo.Var())
-
-        @m.Constraint(param_list, m.sample.index_set())
-        def non_anticipativity_constraints(blk, v, s):
-            return getattr(m, v) == getattr(blk.sample[s], v)
+        if not aggregate_cst_vars:
+            # Add non-anticipativity constraints only if a variable is
+            # defined for each sample
+            @m.Constraint(param_list, m.sample.index_set())
+            def non_anticipativity_constraints(blk, v, s):
+                return getattr(m, v) == getattr(blk.sample[s], v)
 
         # Add an objective
         m.sse = pyo.Objective(expr=sum(m.sample[:].square_of_residual))
