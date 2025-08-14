@@ -8,27 +8,60 @@ import sympy as sp
 _logger = logging.getLogger(__name__)
 
 
+UNARY_FUNC_MAP = {
+    "exp": sp.exp,
+    "log": sp.log,
+    "square": lambda x: sp.Pow(x, 2),
+    "sqrt": sp.sqrt,
+}
+BINARY_FUNC_MAP = {
+    "sum": sp.Add,
+    "mult": sp.Mul,
+    "diff": lambda x, y: sp.Add(x, -y),
+    "div": lambda x, y: sp.Mul(x, 1 / y),
+}
+
+
 class Node:
     """Template for a node in the expression tree"""
 
-    def __init__(self, value, left_child=None, right_child=None):
+    def __init__(self, value, left_child=None, right_child=None, tree_index=None):
         self.value = value
         self.right_child = right_child
         self.left_child = left_child
-        self._construct_sympy_expression()
         self._is_operand = False
+        self._is_constant = False
+        self._tree_index = tree_index
+        self._construct_sympy_expression()
+        self._enhanced_expr = None
 
     def __str__(self):
         return str(self.sympy_expression)
-
-    def is_operand(self):
-        """Returns True if the node is an operand"""
-        return self._is_operand
 
     @property
     def sympy_expression(self):
         """Returns sympy expression for the node"""
         return self._sympy_expr
+
+    def is_operand(self):
+        """Returns True if the node is an operand"""
+        return self._is_operand
+
+    def is_constant(self):
+        """Returns True if the node is a constant"""
+        return self._is_constant
+
+    def _get_unary_expression(self, right_child_expr):
+        try:
+            return UNARY_FUNC_MAP[self.value](right_child_expr)
+        except KeyError as excp:
+            raise ValueError(f"Unrecognized unary operator {self.value}") from excp
+
+    def _get_binary_expression(self, left_child_expr, right_child_expr):
+        try:
+            return BINARY_FUNC_MAP[self.value](left_child_expr, right_child_expr)
+        except KeyError as excp:
+            raise ValueError(f"Unrecognized binary operator {self.value}") from excp
 
     def _construct_sympy_expression(self):
         """Constructs sympy expression for the node"""
@@ -36,46 +69,62 @@ class Node:
         if self.right_child is None and self.left_child is None:
             if isinstance(self.value, str):
                 self._sympy_expr = sp.symbols(self.value)
-                self._is_operand = True
+                if "c_" in self.value:
+                    self._is_constant = True
+                else:
+                    self._is_operand = True
             else:
                 # This must either be an integer or a float
                 self._sympy_expr = self.value
+                self._is_constant = True
             return
 
         # This is a unary operator
         if self.left_child is None:
-            if self.value not in ["exp", "log", "square", "sqrt"]:
-                raise ValueError(f"Unrecognized unary operator {self.value}")
-
-            right_child_expr = self.right_child.sympy_expression
-            expr = {
-                "exp": sp.exp(right_child_expr),
-                "log": sp.log(right_child_expr),
-                "square": right_child_expr**2,
-                "sqrt": sp.sqrt(right_child_expr),
-            }
-            self._sympy_expr = expr[self.value]
+            self._sympy_expr = self._get_unary_expression(
+                self.right_child.sympy_expression
+            )
             return
 
         # This is a binary operator
-        right_child_expr = self.right_child.sympy_expression
-        left_child_expr = self.left_child.sympy_expression
-        if self.value not in ["sum", "diff", "mult", "div"]:
-            raise ValueError(f"Unrecognized binary operator {self.value}")
-
-        expr = {
-            "sum": left_child_expr + right_child_expr,
-            "diff": left_child_expr - right_child_expr,
-            "mult": left_child_expr * right_child_expr,
-            "div": left_child_expr / right_child_expr,
-        }
-        self._sympy_expr = expr[self.value]
+        self._sympy_expr = self._get_binary_expression(
+            self.left_child.sympy_expression, self.right_child.sympy_expression
+        )
         return
 
-    @property
-    def simplified_expression(self):
-        """Returns simplified expression"""
-        return sp.simplify(self.sympy_expression)
+    def get_enhanced_expression(self, enhance_subtree: bool = True):
+        """Returns the node expression with a slope and intercept"""
+        if self._enhanced_expr is not None:
+            # The expression is already constructed, so return
+            return self._enhanced_expr
+
+        slope = sp.symbols(f"m_{self._tree_index}")
+        intercept = sp.symbols(f" k_{self._tree_index}")
+
+        # This is a leaf node/operand
+        if self.right_child is None and self.left_child is None:
+            if self._is_constant:
+                self._enhanced_expr = self._sympy_expr
+            else:
+                # This must be an operand
+                self._enhanced_expr = intercept + slope * self._sympy_expr
+
+        # This is a unary operator
+        elif self.left_child is None:
+            expr = self._get_unary_expression(
+                self.right_child.get_enhanced_expression(enhance_subtree)
+            )
+            self._enhanced_expr = intercept + slope * expr if enhance_subtree else expr
+
+        # This is a binary operator
+        else:
+            expr = self._get_binary_expression(
+                self.left_child.get_enhanced_expression(enhance_subtree),
+                self.right_child.get_enhanced_expression(enhance_subtree),
+            )
+            self._enhanced_expr = intercept + slope * expr if enhance_subtree else expr
+
+        return self._enhanced_expr
 
     def unformatted_expression(self):
         """Returns the expression as is"""
@@ -122,6 +171,7 @@ class ExpressionTree:
                     value=self.tree[i],
                     left_child=self.nodes.get(2 * i, None),
                     right_child=self.nodes.get(2 * i + 1, None),
+                    tree_index=i,
                 )
 
     def __str__(self):
@@ -143,9 +193,22 @@ class ExpressionTree:
         """Returns the simplified expression"""
         return self.nodes[1].simplified_expression
 
-    def get_pyomo_model(self, cst_vars: dict | None = None):
+    def get_enhanced_expression(self, enhance_subtree: bool = True):
+        """Returns the enhanced expression"""
+        return self.nodes[1].get_enhanced_expression(enhance_subtree)
+
+    def get_pyomo_model(
+        self,
+        cst_vars: dict | None = None,
+        enhance_tree: bool = False,
+        enhance_subtree: bool = True,
+    ):
         """Returns a model of the expression tree"""
-        expr = self.sympy_expression  # sympy expression
+        if enhance_tree:
+            expr = self.get_enhanced_expression(enhance_subtree)
+        else:
+            expr = self.sympy_expression  # sympy expression
+
         sympy_vars = list(expr.free_symbols)
         psm = PyomoSympyBimap()  # Pyomo -> sympy variable map
 
@@ -170,15 +233,18 @@ class ExpressionTree:
         return m
 
     def get_parameter_estimation_model(
-        self, data: pd.DataFrame, aggregate_cst_vars: bool = True
+        self,
+        data: pd.DataFrame,
+        enhance_tree: bool = False,
+        enhance_subtree: bool = True,
     ):
         """Constructs the parameter estimation model for the given data"""
-        # NOTE: Using same variables for all samples will yield a smaller
-        # problem, compared to adding duplicates for each sample and adding
-        # non-anticipativity constraints. So, we use the former approach by
-        # default. If there is no benefit to introducing variable copies,
-        # then we can remove support for the second approach.
-        var_list = [str(v) for v in self.sympy_expression.free_symbols]
+        if enhance_tree:
+            expr = self.get_enhanced_expression(enhance_subtree)
+        else:
+            expr = self.sympy_expression  # sympy expression
+
+        var_list = [str(v) for v in expr.free_symbols]
         param_list = [v for v in var_list if v not in data.columns]
         valid_var_list = [v for v in data.columns if v in var_list]
         invalid_var_list = [v for v in data.columns if v != "y" and v not in var_list]
@@ -194,13 +260,9 @@ class ExpressionTree:
         for v in param_list:
             setattr(m, v, pyo.Var())
 
-        if aggregate_cst_vars:
-            cst_vars = {v: getattr(m, v) for v in param_list}
-        else:
-            cst_vars = None
-
         # Construct a pyomo model of the expression for cloning
-        expr_model = self.get_pyomo_model(cst_vars)
+        cst_vars = {v: getattr(m, v) for v in param_list}
+        expr_model = self.get_pyomo_model(cst_vars, enhance_tree, enhance_subtree)
 
         # Construct the expression for each sample
         m.sample = pyo.Block(data.index.to_list())
@@ -219,13 +281,6 @@ class ExpressionTree:
                 expr=blk.residual == blk.output_var - data.loc[s, "y"]
             )
             blk.square_of_residual = pyo.Expression(expr=blk.residual**2)
-
-        if not aggregate_cst_vars:
-            # Add non-anticipativity constraints only if a variable is
-            # defined for each sample
-            @m.Constraint(param_list, m.sample.index_set())
-            def non_anticipativity_constraints(blk, v, s):
-                return getattr(m, v) == getattr(blk.sample[s], v)
 
         # Add an objective
         m.sse = pyo.Objective(expr=sum(m.sample[:].square_of_residual))
