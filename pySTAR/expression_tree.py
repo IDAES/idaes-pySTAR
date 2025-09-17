@@ -195,6 +195,11 @@ class ExpressionTree:
 
     def get_enhanced_expression(self, enhance_subtree: bool = True):
         """Returns the enhanced expression"""
+        # Once an enhanced subtree is constructed, it cannot be changed.
+        # So, we reset the enhanced expression before calling the method
+        for node in self.nodes.values():
+            # pylint: disable = protected-access
+            node._enhanced_expr = None
         return self.nodes[1].get_enhanced_expression(enhance_subtree)
 
     def get_pyomo_model(
