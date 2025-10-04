@@ -216,6 +216,33 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
         # Remove Associative operator combinations
 
+        # Remove composition of inverse functions exp(log(.)) square(sqrt(.))
+        def _inverse_function_rule(blk, n, op_1, op_2):
+            if op_1 == op_2 or (2 * n + 1) in self.terminal_nodes_set:
+                # An example for op_1 = op_2: exp(exp(.)) or log(log(.))
+                # Also, unary operator cannot be present in a terminal node
+                return Constraint.Skip
+            return (
+                blk.select_operator[n, op_1] + blk.select_operator[2 * n + 1, op_2]
+                <= blk.select_node[n]
+            )
+
+        if "exp" in self.unary_operators_set and "log" in self.unary_operators_set:
+            self.redundant_inv_op_exp_log = Constraint(
+                self.non_terminal_nodes_set,
+                ["exp", "log"],
+                ["exp", "log"],
+                rule=_inverse_function_rule,
+            )
+
+        if "square" in self.unary_operators_set and "sqrt" in self.unary_operators_set:
+            self.redundant_inv_op_square_sqrt = Constraint(
+                self.non_terminal_nodes_set,
+                ["square", "sqrt"],
+                ["square", "sqrt"],
+                rule=_inverse_function_rule,
+            )
+
     def add_symmetry_breaking_cuts(self, sample_name=None):
         """Adds cuts to eliminate symmetrical trees from the model"""
         if sample_name is None:
