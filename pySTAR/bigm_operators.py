@@ -220,8 +220,8 @@ class SqrtOperatorData(BaseOperatorData):
         return pyo.sqrt(left_child)
 
 
-@declare_custom_block("ExpOperator", rule="build")
-class ExpOperatorData(BaseOperatorData):
+@declare_custom_block("ExpOldOperator", rule="build")
+class ExpOldOperatorData(BaseOperatorData):
     """Adds constraints for the exponential operator"""
 
     def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
@@ -255,8 +255,78 @@ class ExpOperatorData(BaseOperatorData):
         return pyo.exp(left_child)
 
 
-@declare_custom_block("LogOperator", rule="build")
-class LogOperatorData(BaseOperatorData):
+@declare_custom_block("ExpCompOperator", rule="build")
+class ExpCompOperatorData(BaseOperatorData):
+    """Adds constraints for the exponential operator"""
+
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
+        srm = self.symbolic_regression_model
+
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def complementarity_constraint(_, n):
+            return op_bin_var[n] * (val_node[n] - pyo.exp(val_node[2 * n + 1])) == 0
+
+    def construct_convex_relaxation(self):
+        raise NotImplementedError()
+
+    @staticmethod
+    def compute_node_value(_, left_child):
+        return pyo.exp(left_child)
+
+
+@declare_custom_block("ExpOperator", rule="build")
+class ExpOperatorData(BaseOperatorData):
+    """Adds constraints for the exponential operator"""
+
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
+        srm = self.symbolic_regression_model
+        vlb, vub = srm.var_bounds["lb"], srm.var_bounds["ub"]
+
+        # pylint: disable = attribute-defined-outside-init
+        self.aux_var_exp = pyo.Var(
+            srm.non_terminal_nodes_set,
+            bounds=(max(-10, vlb), pyo.log(vub)),
+            doc="Auxiliary variable for modeling exp function",
+        )
+
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def func_upper_bound_constraint(blk, n):
+            bigm = vub - 0
+            return val_node[n] - pyo.exp(blk.aux_var_exp[n]) <= bigm * (
+                1 - op_bin_var[n]
+            )
+
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def func_lower_bound_constraint(blk, n):
+            bigm = vlb - vub
+            return val_node[n] - pyo.exp(blk.aux_var_exp[n]) >= bigm * (
+                1 - op_bin_var[n]
+            )
+
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def var_upper_bound_constraint(blk, n):
+            bigm = vub - blk.aux_var_exp[n].lb
+            return val_node[2 * n + 1] - blk.aux_var_exp[n] <= bigm * (
+                1 - op_bin_var[n]
+            )
+
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def var_lower_bound_constraint(blk, n):
+            bigm = vlb - blk.aux_var_exp[n].ub
+            return val_node[2 * n + 1] - blk.aux_var_exp[n] >= bigm * (
+                1 - op_bin_var[n]
+            )
+
+    def construct_convex_relaxation(self):
+        raise NotImplementedError()
+
+    @staticmethod
+    def compute_node_value(_, left_child):
+        return pyo.exp(left_child)
+
+
+@declare_custom_block("LogOldOperator", rule="build")
+class LogOldOperatorData(BaseOperatorData):
     """Adds constraints for the logarithm operator"""
 
     def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
@@ -288,6 +358,77 @@ class LogOperatorData(BaseOperatorData):
             # Ensures that the denominator is away from zero
             # return eps * op_bin_var[n] <= val_node[2 * n + 1] ** 2
             return op_bin_var[n] * val_node[2 * n + 1] >= op_bin_var[n] - 1 + eps
+
+    def construct_convex_relaxation(self):
+        raise NotImplementedError()
+
+    @staticmethod
+    def compute_node_value(_, left_child):
+        return pyo.log(left_child)
+
+
+@declare_custom_block("LogCompOperator", rule="build")
+class LogCompOperatorData(BaseOperatorData):
+    """Adds constraints for the exponential operator"""
+
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
+        srm = self.symbolic_regression_model
+
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def complementarity_constraint(_, n):
+            # Need to transform the equation to avoid log domain error
+            return op_bin_var[n] * (pyo.exp(val_node[n]) - val_node[2 * n + 1]) == 0
+
+    def construct_convex_relaxation(self):
+        raise NotImplementedError()
+
+    @staticmethod
+    def compute_node_value(_, left_child):
+        return pyo.log(left_child)
+
+
+@declare_custom_block("LogOperator", rule="build")
+class LogOperatorData(BaseOperatorData):
+    """Adds constraints for the exponential operator"""
+
+    def build(self, *args, val_node: pyo.Var, op_bin_var: dict):
+        srm = self.symbolic_regression_model
+        vlb, vub = srm.var_bounds["lb"], srm.var_bounds["ub"]
+
+        # pylint: disable = attribute-defined-outside-init
+        self.aux_var_log = pyo.Var(
+            srm.non_terminal_nodes_set,
+            bounds=(srm.eps_value, vub),
+            doc="Auxiliary variable for modeling log function",
+        )
+
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def func_upper_bound_constraint(blk, n):
+            bigm = vub - pyo.log(blk.aux_var_log[n].lb)
+            return val_node[n] - pyo.log(blk.aux_var_log[n]) <= bigm * (
+                1 - op_bin_var[n]
+            )
+
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def func_lower_bound_constraint(blk, n):
+            bigm = vlb - pyo.log(blk.aux_var_log[n].ub)
+            return val_node[n] - pyo.log(blk.aux_var_log[n]) >= bigm * (
+                1 - op_bin_var[n]
+            )
+
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def var_upper_bound_constraint(blk, n):
+            bigm = vub - blk.aux_var_log[n].lb
+            return val_node[2 * n + 1] - blk.aux_var_log[n] <= bigm * (
+                1 - op_bin_var[n]
+            )
+
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def var_lower_bound_constraint(blk, n):
+            bigm = vlb - blk.aux_var_log[n].ub
+            return val_node[2 * n + 1] - blk.aux_var_log[n] >= bigm * (
+                1 - op_bin_var[n]
+            )
 
     def construct_convex_relaxation(self):
         raise NotImplementedError()
@@ -331,7 +472,11 @@ BIGM_OPERATORS = {
     "div": DivOperator,
     "sqrt": SqrtOperator,
     "log": LogOperator,
+    "log_comp": LogCompOperator,
+    "log_old": LogOldOperator,
     "exp": ExpOperator,
+    "exp_comp": ExpCompOperator,
+    "exp_old": ExpOldOperator,
     "square": SquareOperator,
 }
 
