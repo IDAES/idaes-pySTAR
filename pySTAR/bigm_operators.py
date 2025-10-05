@@ -46,7 +46,7 @@ class BaseOperatorData(BlockData):
         raise NotImplementedError()
 
     @staticmethod
-    def compute_node_value(right_child: float, left_child: float):
+    def compute_node_value(left_child: float, right_child: float):
         """Computes the value at a node based on the operator"""
         raise NotImplementedError()
 
@@ -78,8 +78,8 @@ class SumOperatorData(BaseOperatorData):
         pass
 
     @staticmethod
-    def compute_node_value(right_child, left_child):
-        return right_child + left_child
+    def compute_node_value(left_child, right_child):
+        return left_child + right_child
 
 
 @declare_custom_block("DiffOperator", rule="build")
@@ -109,8 +109,8 @@ class DiffOperatorData(BaseOperatorData):
         pass
 
     @staticmethod
-    def compute_node_value(right_child, left_child):
-        return right_child - left_child
+    def compute_node_value(left_child, right_child):
+        return left_child - right_child
 
 
 @declare_custom_block("MultOperator", rule="build")
@@ -144,8 +144,8 @@ class MultOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
     @staticmethod
-    def compute_node_value(right_child, left_child):
-        return right_child * left_child
+    def compute_node_value(left_child, right_child):
+        return left_child * right_child
 
 
 @declare_custom_block("DivOperator", rule="build")
@@ -186,8 +186,8 @@ class DivOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
     @staticmethod
-    def compute_node_value(right_child, left_child):
-        return right_child / left_child
+    def compute_node_value(left_child, right_child):
+        return left_child / right_child
 
 
 @declare_custom_block("SqrtOperator", rule="build")
@@ -216,8 +216,8 @@ class SqrtOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
     @staticmethod
-    def compute_node_value(_, left_child):
-        return pyo.sqrt(left_child)
+    def compute_node_value(_, right_child):
+        return pyo.sqrt(right_child)
 
 
 @declare_custom_block("ExpOldOperator", rule="build")
@@ -251,8 +251,8 @@ class ExpOldOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
     @staticmethod
-    def compute_node_value(_, left_child):
-        return pyo.exp(left_child)
+    def compute_node_value(_, right_child):
+        return pyo.exp(right_child)
 
 
 @declare_custom_block("ExpCompOperator", rule="build")
@@ -270,8 +270,8 @@ class ExpCompOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
     @staticmethod
-    def compute_node_value(_, left_child):
-        return pyo.exp(left_child)
+    def compute_node_value(_, right_child):
+        return pyo.exp(right_child)
 
 
 @declare_custom_block("ExpOperator", rule="build")
@@ -321,8 +321,8 @@ class ExpOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
     @staticmethod
-    def compute_node_value(_, left_child):
-        return pyo.exp(left_child)
+    def compute_node_value(_, right_child):
+        return pyo.exp(right_child)
 
 
 @declare_custom_block("LogOldOperator", rule="build")
@@ -363,8 +363,8 @@ class LogOldOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
     @staticmethod
-    def compute_node_value(_, left_child):
-        return pyo.log(left_child)
+    def compute_node_value(_, right_child):
+        return pyo.log(right_child)
 
 
 @declare_custom_block("LogCompOperator", rule="build")
@@ -383,8 +383,8 @@ class LogCompOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
     @staticmethod
-    def compute_node_value(_, left_child):
-        return pyo.log(left_child)
+    def compute_node_value(_, right_child):
+        return pyo.log(right_child)
 
 
 @declare_custom_block("LogOperator", rule="build")
@@ -434,8 +434,8 @@ class LogOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
     @staticmethod
-    def compute_node_value(_, left_child):
-        return pyo.log(left_child)
+    def compute_node_value(_, right_child):
+        return pyo.log(right_child)
 
 
 @declare_custom_block("SquareOperator", rule="build")
@@ -460,8 +460,8 @@ class SquareOperatorData(BaseOperatorData):
         raise NotImplementedError()
 
     @staticmethod
-    def compute_node_value(_, left_child):
-        return left_child**2
+    def compute_node_value(_, right_child):
+        return right_child**2
 
 
 # pylint: disable = undefined-variable
