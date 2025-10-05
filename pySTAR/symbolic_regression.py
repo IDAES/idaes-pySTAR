@@ -5,7 +5,7 @@ import pyomo.environ as pyo
 from pyomo.environ import Var, Constraint
 
 # pylint: disable = import-error
-from bigm_operators import BigmSampleBlock
+from bigm_operators import BigmSampleBlock, BigmSampleBlockData
 from hull_operators import HullSampleBlock
 
 LOGGER = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
     ):
         super().__init__(*args, **kwds)
 
+        self.model_type = model_type
         # Check if the received operators are supported or not
         if operators is None:
             # If not specified, use all supported operators
@@ -349,6 +350,25 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
     def selected_tree_to_expression(self):
         """Returns the optimal expression as a string"""
+
+    def get_parity_plot_data(self):
+        """Returns a DataFrame containing actual outputs and predicted outputs"""
+        results = pd.DataFrame()
+        results["sim_data"] = self.output_data_ref
+        first_sample_name = self.input_data_ref.iloc[0].name
+        if isinstance(self.samples[first_sample_name], BigmSampleBlockData):
+            results["prediction"] = [
+                self.samples[s].val_node[1].value for s in self.samples
+            ]
+        else:
+            results["prediction"] = [
+                self.samples[s].node[1].val_node.value for s in self.samples
+            ]
+        results["square_of_error"] = [
+            self.samples[s].square_of_residual.expr() for s in self.samples
+        ]
+
+        return results
 
 
 def _get_operand_domains(data: pd.DataFrame, tol: float):
