@@ -1,5 +1,7 @@
+from itertools import product
 import logging
 from typing import List, Optional
+import numpy as np
 import pandas as pd
 import pyomo.environ as pyo
 from pyomo.environ import Var, Constraint
@@ -34,7 +36,10 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
     ):
         super().__init__(*args, **kwds)
 
-        self.model_type = model_type
+        # Perform input data checks
+        if tree_depth < 2:
+            raise ValueError(f"tree_depth must be >= 2. Received {tree_depth}.")
+
         # Check if the received operators are supported or not
         if operators is None:
             # If not specified, use all supported operators
@@ -95,6 +100,8 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         self.operands_set = pyo.Set(initialize=list(_col_name_map.values()) + ["cst"])
         self.collective_operator_set = self.operators_set.union(self.operands_set)
 
+        # pre_non_terminal_nodes_set: Set of nodes without the last two layers
+        self.pre_non_terminal_nodes_set = pyo.RangeSet(2 ** (tree_depth - 2) - 1)
         self.non_terminal_nodes_set = pyo.RangeSet(2 ** (tree_depth - 1) - 1)
         self.terminal_nodes_set = pyo.RangeSet(2 ** (tree_depth - 1), 2**tree_depth - 1)
         self.nodes_set = self.non_terminal_nodes_set.union(self.terminal_nodes_set)
@@ -109,6 +116,26 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             self.samples = HullSampleBlock(self.input_data_ref.index.to_list())
         else:
             raise ValueError(f"model_type: {model_type} is not recognized.")
+
+        # Build useful expressions
+        self.sum_square_residual = pyo.Expression(
+            expr=sum(self.samples[:].square_of_residual),
+            doc="Evaluates the sum of square of errors across all samples",
+        )
+
+    @property
+    def max_depth(self):
+        """Returns the maximum possible depth of a tree"""
+        return round(np.log2(len(self.nodes_set) + 1))
+
+    @property
+    def model_type(self):
+        """Returns the type (bigm or hull) used to transform disjunctions"""
+        first_sample_name = self.input_data_ref.iloc[0].name
+        if isinstance(self.samples[first_sample_name], BigmSampleBlockData):
+            return "bigm"
+
+        return "hull"
 
     def _build_expression_tree_model(self):
         """Builds constraints that return a valid expression tree"""
@@ -188,7 +215,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         """
         if objective_type == "sse":
             # build SSR objective
-            self.sse = pyo.Objective(expr=sum(self.samples[:].square_of_residual))
+            self.sse = pyo.Objective(expr=self.sum_square_residual)
 
         elif objective_type == "bic":
             # Build BIC objective
@@ -199,30 +226,71 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
                 f"Specified objective_type: {objective_type} is not supported."
             )
 
-    def add_redundancy_cuts(self):
-        """Adds cuts to eliminate redundance from the model"""
+    def add_same_operand_operation_cuts(self):
+        """Adds cuts to avoid expressions of type: x + x, x - x, x * x, x / x"""
 
-        # Do not choose the same operand for both the child nodes.
-        # This cut avoids expressions of type: x + x, x - x, x * x, x / x.
         @self.Constraint(self.non_terminal_nodes_set, self.operands_set)
         def redundant_bin_op_same_operand(blk, n, op):
             if op == "cst":
                 # Both child nodes cannot take a constant, so skip this case
                 return Constraint.Skip
 
+            # Do not choose the same operand for both the child nodes.
             return (
                 blk.select_operator[2 * n, op] + blk.select_operator[2 * n + 1, op]
                 <= blk.select_node[n]
             )
 
-        # Remove Associative operator combinations
+    def add_constant_operation_cuts(self):
+        """
+        Adds constraints to remove expressions of type: cst (op_1) (cst (op_2) x1)
+        """
+        op_list = []
+        if "sum" in self.binary_operators_set and "diff" in self.binary_operators_set:
+            op_list += list(product(["sum", "diff"], ["sum", "diff"]))
 
-        # Remove composition of inverse functions exp(log(.)) square(sqrt(.))
+        if "mult" in self.binary_operators_set and "div" in self.binary_operators_set:
+            op_list += list(product(["mult", "div"], ["mult", "div"]))
+
+        @self.Constraint(self.pre_non_terminal_nodes_set, op_list)
+        def redundant_cst_operations(blk, n, op1, op2):
+            # cst[2 * n] op1[n] (cst[4 * n + 2] op1[2 * n + 1] ....)
+            return (
+                blk.select_operator[2 * n, "cst"]
+                + blk.select_operator[4 * n + 2, "cst"]
+                <= 3 * blk.select_node[n]
+                - blk.select_operator[n, op1]
+                - blk.select_operator[2 * n + 1, op2]
+            )
+
+    def add_associative_operation_cuts(self):
+        """
+        Adds cuts to remove associative operator combinations.
+        A + B - C and A - (C - B) are equivalent, so remove former.
+        A * (B / C) and A / (C / B) are equivalent, so remove former
+        """
+        op_list = []
+        if "sum" in self.binary_operators_set and "diff" in self.binary_operators_set:
+            op_list += [("sum", "diff")]
+
+        if "mult" in self.binary_operators_set and "div" in self.binary_operators_set:
+            op_list += [("mult", "div")]
+
+        @self.Constraint(self.pre_non_terminal_nodes_set, op_list)
+        def redundant_associative_operations(blk, n, op1, op2):
+            # A + B - C and A - (C - B) are equivalent, so remove former
+            # A * (B / C) and A / (C / B) are equivalent, so remove former
+            return (
+                blk.select_operator[n, op1] + blk.select_operator[2 * n + 1, op2]
+                <= blk.select_node[n]
+            )
+
+    def add_inverse_function_composition_cuts(self):
+        """
+        Adds cuts to remove composition of inverse functions: exp(log(.)); square(sqrt(.))
+        """
+
         def _inverse_function_rule(blk, n, op_1, op_2):
-            if op_1 == op_2 or (2 * n + 1) in self.terminal_nodes_set:
-                # An example for op_1 = op_2: exp(exp(.)) or log(log(.))
-                # Also, unary operator cannot be present in a terminal node
-                return Constraint.Skip
             return (
                 blk.select_operator[n, op_1] + blk.select_operator[2 * n + 1, op_2]
                 <= blk.select_node[n]
@@ -230,17 +298,15 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
         if "exp" in self.unary_operators_set and "log" in self.unary_operators_set:
             self.redundant_inv_op_exp_log = Constraint(
-                self.non_terminal_nodes_set,
-                ["exp", "log"],
-                ["exp", "log"],
+                self.pre_non_terminal_nodes_set,
+                [("exp", "log"), ("log", "exp")],
                 rule=_inverse_function_rule,
             )
 
         if "square" in self.unary_operators_set and "sqrt" in self.unary_operators_set:
             self.redundant_inv_op_square_sqrt = Constraint(
-                self.non_terminal_nodes_set,
-                ["square", "sqrt"],
-                ["square", "sqrt"],
+                self.pre_non_terminal_nodes_set,
+                [("square", "sqrt"), ("sqrt", "square")],
                 rule=_inverse_function_rule,
             )
 
@@ -355,8 +421,8 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         """Returns a DataFrame containing actual outputs and predicted outputs"""
         results = pd.DataFrame()
         results["sim_data"] = self.output_data_ref
-        first_sample_name = self.input_data_ref.iloc[0].name
-        if isinstance(self.samples[first_sample_name], BigmSampleBlockData):
+
+        if self.model_type == "bigm":
             results["prediction"] = [
                 self.samples[s].val_node[1].value for s in self.samples
             ]
@@ -364,6 +430,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             results["prediction"] = [
                 self.samples[s].node[1].val_node.value for s in self.samples
             ]
+
         results["square_of_error"] = [
             self.samples[s].square_of_residual.expr() for s in self.samples
         ]
