@@ -32,7 +32,6 @@ def build_model():
 if __name__ == "__main__":
     solver = "baron"
     mdl = build_model()
-    mdl.add_redundancy_cuts()
     # mdl.add_tree_size_constraint(3)
 
     if solver == "scip":

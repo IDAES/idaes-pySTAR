@@ -8,6 +8,7 @@ from pyomo.environ import Var, Constraint
 
 # pylint: disable = import-error
 from bigm_operators import BigmSampleBlock, BigmSampleBlockData
+from expression_tree import ExpressionTree
 from hull_operators import HullSampleBlock
 
 LOGGER = logging.getLogger(__name__)
@@ -416,6 +417,12 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
     def selected_tree_to_expression(self):
         """Returns the optimal expression as a string"""
+        selected_op = self.get_selected_operators()
+        et = ExpressionTree(selected_op)
+        et.cst_values = {
+            n: self.constant_val[n].value for n, op in selected_op if op == "cst"
+        }
+        return et
 
     def get_parity_plot_data(self):
         """Returns a DataFrame containing actual outputs and predicted outputs"""
