@@ -180,11 +180,7 @@ class ExpressionTree:
         # solving the symbolic regression model.
         # See selected_tree_to_expression() method in SymbolicRegressionModel
         cst_values = getattr(self, "cst_values", None)
-        if cst_values is not None:
-            cst = {f"c_{k}": v for k, v in cst_values.items()}
-            return str(self.nodes[1].sympy_expression.subs(cst))
-
-        return str(self.nodes[1])
+        return str(self.substitute_cst_values(cst_values))
 
     def __add__(self, et):
         return self.sympy_expression + et.sympy_expression
@@ -202,23 +198,23 @@ class ExpressionTree:
         """Returns the simplified expression"""
         return self.nodes[1].simplified_expression
 
+    def substitute_cst_values(self, cst_values: dict | None = None):
+        """Substitutes values of constants and returns the expression"""
+        if cst_values is None:
+            return self.sympy_expression
+
+        cst = {f"c_{k}": v for k, v in cst_values.items()}
+        return self.sympy_expression.subs(cst)
+
     def write_expression(self, filename: str):
         """Writes the expression to a text file"""
         if ".txt" not in filename:
             raise ValueError("Not a valid filename!")
 
         # pylint: disable = unspecified-encoding
+        cst_values = getattr(self, "cst_values", None)
         with open(filename, "w") as fp:
-            try:
-                # Assume that constant values are known
-                # Substitute constant values and write the expression
-                cst = {f"c_{k}": v for k, v in self.cst_values.items()}
-                fp.write(str(self.sympy_expression.subs(cst)))
-
-            except AttributeError:
-                # Constant values are not available (Attribute cst_values
-                # does not exist). So, write the expression as is.
-                fp.write(str(self))
+            fp.write(str(self.substitute_cst_values(cst_values)))
 
     def get_enhanced_expression(self, enhance_subtree: bool = True):
         """Returns the enhanced expression"""
