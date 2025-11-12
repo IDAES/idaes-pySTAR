@@ -444,6 +444,23 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
         return results
 
+    def compute_r2(self):
+        """Returns the R2 value for the expression"""
+        data = self.get_parity_plot_data()
+
+        if all(data["prediction"].isna()):
+            # It is likely that the model is not solved, so there are nans
+            LOGGER.warning(
+                "Predicted values are not numbers. Model is likely not solved."
+            )
+            return None
+
+        mean_sim_data = data["sim_data"].mean()
+        return 1 - float(
+            data["square_of_error"].sum()
+            / ((data["sim_data"] - mean_sim_data) ** 2).sum()
+        )
+
 
 def _get_operand_domains(data: pd.DataFrame, tol: float):
     near_zero_operands = []
