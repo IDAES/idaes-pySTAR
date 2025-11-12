@@ -14,7 +14,7 @@ from hull_operators import HullSampleBlock
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_UNARY_OPS = ["square", "sqrt", "log", "exp"]
 SUPPORTED_BINARY_OPS = ["sum", "diff", "mult", "div"]
-SUPPORTED_UNARY_OPS += ["exp_old", "exp_comp", "log_old", "log_comp"]
+# SUPPORTED_UNARY_OPS += ["exp_old", "exp_comp", "log_old", "log_comp"]
 
 
 # pylint: disable = logging-fstring-interpolation
