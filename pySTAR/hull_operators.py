@@ -209,10 +209,8 @@ class SqrtOperatorData(BaseOperatorData):
     _is_unary_operator = True
 
     def build_operator_model(self):
-        # Expressing the constraint in this manner makes it a
-        # quadratic constraint, instead of a general nonlinear constraint
         self.evaluate_val_node = Constraint(
-            expr=self.val_node * self.val_node == self.val_right_node
+            expr=self.val_node == pyo.sqrt(self.val_right_node)
         )
 
         # val_right_node must be non-negative in this case

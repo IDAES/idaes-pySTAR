@@ -203,6 +203,59 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
                 <= blk.constant_bounds["ub"] * blk.select_operator[n, "cst"]
             )
 
+        # The variables and constraints in this block help in avoiding solutions
+        # where the constant values are near-zero.
+        @self.Block()
+        def non_zero_constant_value_blk(blk):
+            blk.select_pos_val = Var(self.nodes_set, within=pyo.Binary)
+            blk.select_neg_val = Var(self.nodes_set, within=pyo.Binary)
+            blk.pos_constant_val = Var(self.nodes_set, within=pyo.NonNegativeReals)
+            blk.neg_constant_val = Var(self.nodes_set, within=pyo.NonNegativeReals)
+
+            @blk.Constraint(self.nodes_set)
+            def choose_either_pos_or_neg_con(_, n):
+                return (
+                    blk.select_pos_val[n] + blk.select_neg_val[n]
+                    == self.select_operator[n, "cst"]
+                )
+
+            @blk.Constraint(self.nodes_set)
+            def calculate_constant_val(_, n):
+                return (
+                    blk.pos_constant_val[n] - blk.neg_constant_val[n]
+                    == self.constant_val[n]
+                )
+
+            @blk.Constraint(self.nodes_set)
+            def pos_lower_bound_con(_, n):
+                return (
+                    pyo.sqrt(self.eps_value) * blk.select_pos_val[n]
+                    <= blk.pos_constant_val[n]
+                )
+
+            @blk.Constraint(self.nodes_set)
+            def pos_upper_bound_con(_, n):
+                return (
+                    blk.pos_constant_val[n]
+                    <= self.constant_bounds["ub"] * blk.select_pos_val[n]
+                )
+
+            @blk.Constraint(self.nodes_set)
+            def neg_lower_bound_con(_, n):
+                return (
+                    pyo.sqrt(self.eps_value) * blk.select_neg_val[n]
+                    <= blk.neg_constant_val[n]
+                )
+
+            @blk.Constraint(self.nodes_set)
+            def neg_upper_bound_con(_, n):
+                return (
+                    blk.neg_constant_val[n]
+                    <= self.constant_bounds["ub"] * blk.select_neg_val[n]
+                )
+
+        self.non_zero_constant_value_blk.deactivate()
+
     # pylint: disable = attribute-defined-outside-init
     def add_objective(self, objective_type: str = "sse"):
         """Appends objective function to the model

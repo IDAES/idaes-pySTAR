@@ -212,6 +212,10 @@ class SqrtOperatorData(BaseOperatorData):
         def non_negativity_constraint(_, n):
             return val_node[2 * n + 1] >= (1 - op_bin_var[n]) * vlb
 
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def non_negativity_constraint_parent(_, n):
+            return val_node[n] >= (1 - op_bin_var[n]) * vlb
+
     def construct_convex_relaxation(self):
         raise NotImplementedError()
 

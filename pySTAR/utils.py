@@ -74,9 +74,14 @@ def _bigm_gurobi_formulation(srm: SymbolicRegressionModel):
 
 def _hull_gurobi_formulation(m: SymbolicRegressionModel):
     """Uses Gurobibpy interface to solve the MINLP"""
+    op_list = (
+        hop.ExpOperatorData,
+        hop.LogOperatorData,
+        hop.SqrtOperatorData,
+    )
 
     for blk in m.component_data_objects(pyo.Block):
-        if isinstance(blk, (hop.ExpOperatorData, hop.LogOperatorData)):
+        if isinstance(blk, op_list):
             # Deactivate the nonlinear constraint
             blk.evaluate_val_node.deactivate()
 
@@ -102,9 +107,15 @@ def _hull_gurobi_formulation(m: SymbolicRegressionModel):
                 - 1
             )
 
+        elif isinstance(blk, hop.SqrtOperatorData):
+            # Add the nonlinear constraint
+            gm.addConstr(
+                pm_to_gm[blk.val_node] == nlfunc.sqrt(pm_to_gm[blk.val_right_node])
+            )
+
     # Activate the constraint back
     for blk in m.component_data_objects(pyo.Block):
-        if isinstance(blk, (hop.LogOperatorData, hop.ExpOperatorData)):
+        if isinstance(blk, op_list):
             # Activate the nonlinear constraint
             blk.evaluate_val_node.activate()
 
