@@ -14,7 +14,7 @@ from hull_operators import HullSampleBlock
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_UNARY_OPS = ["square", "sqrt", "log", "exp"]
 SUPPORTED_BINARY_OPS = ["sum", "diff", "mult", "div"]
-SUPPORTED_UNARY_OPS += ["exp_old", "exp_comp", "log_old", "log_comp"]
+# SUPPORTED_UNARY_OPS += ["exp_old", "exp_comp", "log_old", "log_comp"]
 
 
 # pylint: disable = logging-fstring-interpolation
@@ -202,6 +202,59 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
                 blk.constant_val[n]
                 <= blk.constant_bounds["ub"] * blk.select_operator[n, "cst"]
             )
+
+        # The variables and constraints in this block help in avoiding solutions
+        # where the constant values are near-zero.
+        @self.Block()
+        def non_zero_constant_value_blk(blk):
+            blk.select_pos_val = Var(self.nodes_set, within=pyo.Binary)
+            blk.select_neg_val = Var(self.nodes_set, within=pyo.Binary)
+            blk.pos_constant_val = Var(self.nodes_set, within=pyo.NonNegativeReals)
+            blk.neg_constant_val = Var(self.nodes_set, within=pyo.NonNegativeReals)
+
+            @blk.Constraint(self.nodes_set)
+            def choose_either_pos_or_neg_con(_, n):
+                return (
+                    blk.select_pos_val[n] + blk.select_neg_val[n]
+                    == self.select_operator[n, "cst"]
+                )
+
+            @blk.Constraint(self.nodes_set)
+            def calculate_constant_val(_, n):
+                return (
+                    blk.pos_constant_val[n] - blk.neg_constant_val[n]
+                    == self.constant_val[n]
+                )
+
+            @blk.Constraint(self.nodes_set)
+            def pos_lower_bound_con(_, n):
+                return (
+                    pyo.sqrt(self.eps_value) * blk.select_pos_val[n]
+                    <= blk.pos_constant_val[n]
+                )
+
+            @blk.Constraint(self.nodes_set)
+            def pos_upper_bound_con(_, n):
+                return (
+                    blk.pos_constant_val[n]
+                    <= self.constant_bounds["ub"] * blk.select_pos_val[n]
+                )
+
+            @blk.Constraint(self.nodes_set)
+            def neg_lower_bound_con(_, n):
+                return (
+                    pyo.sqrt(self.eps_value) * blk.select_neg_val[n]
+                    <= blk.neg_constant_val[n]
+                )
+
+            @blk.Constraint(self.nodes_set)
+            def neg_upper_bound_con(_, n):
+                return (
+                    blk.neg_constant_val[n]
+                    <= self.constant_bounds["ub"] * blk.select_neg_val[n]
+                )
+
+        self.non_zero_constant_value_blk.deactivate()
 
     # pylint: disable = attribute-defined-outside-init
     def add_objective(self, objective_type: str = "sse"):
@@ -443,6 +496,23 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         ]
 
         return results
+
+    def compute_r2(self):
+        """Returns the R2 value for the expression"""
+        data = self.get_parity_plot_data()
+
+        if all(data["prediction"].isna()):
+            # It is likely that the model is not solved, so there are nans
+            LOGGER.warning(
+                "Predicted values are not numbers. Model is likely not solved."
+            )
+            return None
+
+        mean_sim_data = data["sim_data"].mean()
+        return 1 - float(
+            data["square_of_error"].sum()
+            / ((data["sim_data"] - mean_sim_data) ** 2).sum()
+        )
 
 
 def _get_operand_domains(data: pd.DataFrame, tol: float):
