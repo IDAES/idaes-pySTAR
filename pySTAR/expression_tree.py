@@ -175,7 +175,12 @@ class ExpressionTree:
                 )
 
     def __str__(self):
-        return str(self.nodes[1])
+        # NOTE: cst_values is not defined by default. This attribute
+        # will be created if the constant values are known. E.g., after
+        # solving the symbolic regression model.
+        # See selected_tree_to_expression() method in SymbolicRegressionModel
+        cst_values = getattr(self, "cst_values", None)
+        return str(self.substitute_cst_values(cst_values))
 
     def __add__(self, et):
         return self.sympy_expression + et.sympy_expression
@@ -192,6 +197,24 @@ class ExpressionTree:
     def simplified_expression(self):
         """Returns the simplified expression"""
         return self.nodes[1].simplified_expression
+
+    def substitute_cst_values(self, cst_values: dict | None = None):
+        """Substitutes values of constants and returns the expression"""
+        if cst_values is None:
+            return self.sympy_expression
+
+        cst = {f"c_{k}": v for k, v in cst_values.items()}
+        return self.sympy_expression.subs(cst)
+
+    def write_expression(self, filename: str):
+        """Writes the expression to a text file"""
+        if ".txt" not in filename:
+            raise ValueError("Not a valid filename!")
+
+        # pylint: disable = unspecified-encoding
+        cst_values = getattr(self, "cst_values", None)
+        with open(filename, "w") as fp:
+            fp.write(str(self.substitute_cst_values(cst_values)))
 
     def get_enhanced_expression(self, enhance_subtree: bool = True):
         """Returns the enhanced expression"""
