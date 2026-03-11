@@ -286,6 +286,12 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             self.sse = pyo.Objective(expr=self.sum_square_residual)
             return
 
+        if objective_type == "nodes":
+            # build number of nodes objective
+            self.nodes = pyo.Objective(
+                expr=sum(self.select_node[n] for n in self.nodes_set)
+            )
+            return
         # Defining an auxiliary variable for SSE for convenience
         # Note that y = y_data_1 is a valid/feasible expression. The SSE
         # value corresponding to this expression is used as an upper bound and
@@ -585,6 +591,15 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             self.min_tree_size_constraint = Constraint(
                 expr=sum(self.select_node[n] for n in self.nodes_set)
                 >= self.min_tree_size
+            )
+
+    def constrain_sse(self, sse_max: float):
+        """Adds a constraint to set an upper bound on SSE"""
+        self.max_sse = sse_max
+
+        if not hasattr(self, "sse_constraint"):
+            self.max_sse_constraint = Constraint(
+                expr=self.sum_square_residual <= self.max_sse
             )
 
     def relax_integrality_constraints(self):
