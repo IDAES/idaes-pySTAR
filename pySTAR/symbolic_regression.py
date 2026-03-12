@@ -279,19 +279,19 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         """
 
         # Define quantities needed in the definitions of model selection criteria
-        self.n_data = len(self.input_data_ref)
-        self.n_nodes = sum(self.select_node[n] for n in self.nodes_set)
-        self.n_operators = sum(
-            self.select_operator[n, op]
-            for n in self.nodes_set
-            for op in self.operators_set
-        )
+        self.num_data_pts = len(self.output_data_ref)
 
         if objective_type == "sse":
             # build SSR objective
             self.sse = pyo.Objective(expr=self.sum_square_residual)
             return
 
+        if objective_type == "nodes":
+            # build number of nodes objective
+            self.nodes = pyo.Objective(
+                expr=sum(self.select_node[n] for n in self.nodes_set)
+            )
+            return
         # Defining an auxiliary variable for SSE for convenience
         # Note that y = y_data_1 is a valid/feasible expression. The SSE
         # value corresponding to this expression is used as an upper bound and
@@ -310,14 +310,44 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             doc="Computes the value of sum of squares of errors",
         )
 
-        if "bic" in objective_type:
+        if objective_type.startswith("bic_"):
             # Build BIC objective
-            # Supported options: "nodes", "depth", "csts", "wtd_operators", "operators"
-            num_data_pts = len(self.output_data_ref)
+            # Supported options: "nodes", "depth", "depth_new", "csts", "wtd_operators", "operators"
             self.bic = pyo.Objective(
-                expr=num_data_pts * pyo.log(self.aux_var_sse / num_data_pts)
+                expr=self.num_data_pts * pyo.log(self.aux_var_sse / self.num_data_pts)
                 + self._get_penalization_expression(objective_type[4:])
-                * pyo.log(num_data_pts)
+                * pyo.log(self.num_data_pts)
+            )
+            return
+
+        if objective_type.startswith("aic_cor_"):
+            # Build corrected AIC objective
+            # Supported options: "nodes", "depth", "depth_new", "csts", "wtd_operators", "operators"
+            penalty = self._get_penalization_expression(objective_type[8:])
+            self.aic_cor = pyo.Objective(
+                expr=self.num_data_pts * pyo.log(self.aux_var_sse / self.num_data_pts)
+                + penalty * 2
+                + 2 * penalty * (penalty + 1) / (self.num_data_pts - penalty - 1)
+            )
+            return
+
+        if objective_type.startswith("aic_"):
+            # Build AIC objective
+            # Supported options: "nodes", "depth", "depth_new", "csts", "wtd_operators", "operators"
+            self.aic = pyo.Objective(
+                expr=self.num_data_pts * pyo.log(self.aux_var_sse / self.num_data_pts)
+                + self._get_penalization_expression(objective_type[4:]) * 2
+            )
+            return
+
+        if objective_type.startswith("hqic_"):
+            # Build HQIC objective
+            # Supported options: "nodes", "depth", "depth_new", "csts", "wtd_operators", "operators"
+            self.hqic = pyo.Objective(
+                expr=self.num_data_pts * pyo.log(self.aux_var_sse / self.num_data_pts)
+                + self._get_penalization_expression(objective_type[5:])
+                * 2
+                * pyo.log(pyo.log(self.num_data_pts))
             )
             return
 
@@ -561,6 +591,15 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             self.min_tree_size_constraint = Constraint(
                 expr=sum(self.select_node[n] for n in self.nodes_set)
                 >= self.min_tree_size
+            )
+
+    def constrain_sse(self, sse_max: float):
+        """Adds a constraint to set an upper bound on SSE"""
+        self.max_sse = sse_max
+
+        if not hasattr(self, "sse_constraint"):
+            self.max_sse_constraint = Constraint(
+                expr=self.sum_square_residual <= self.max_sse
             )
 
     def relax_integrality_constraints(self):
