@@ -1,4 +1,6 @@
 import logging
+import binarytree
+import numpy as np
 import pandas as pd
 from pyomo.core.expr.sympy_tools import PyomoSympyBimap, sympy2pyomo_expression
 import pyomo.environ as pyo
@@ -197,6 +199,37 @@ class ExpressionTree:
     def simplified_expression(self):
         """Returns the simplified expression"""
         return self.nodes[1].simplified_expression
+
+    def display_tree(self, show_cst_values: bool = False):
+        """Displays the expression tree
+
+        Parameters
+        ----------
+        show_cst_values : bool, optional
+            Display numerical values for constants if available,
+            by default False
+        """
+        tree_depth = int(np.ceil(np.log2(max(self.nodes.keys()))))
+        cst_values = getattr(self, "cst_values", None)
+
+        def _format_operator(val: str):
+            if not show_cst_values or cst_values is None:
+                return val
+
+            # cst_values are available
+            if val.startswith("c_"):
+                # pylint: disable = unsubscriptable-object
+                return cst_values[int(val.split("c_")[1])]
+
+            return val
+
+        et = binarytree.build(
+            [
+                _format_operator(self.nodes[i].value) if i in self.nodes else None
+                for i in range(1, 2**tree_depth)
+            ]
+        )
+        print(et)
 
     def substitute_cst_values(self, cst_values: dict | None = None):
         """Substitutes values of constants and returns the expression"""
