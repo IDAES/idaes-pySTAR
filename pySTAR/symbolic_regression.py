@@ -310,6 +310,25 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             doc="Computes the value of sum of squares of errors",
         )
 
+        if objective_type.startswith("mse_"):
+
+            self.mse_complexity_limit = Constraint(
+                expr=self._get_penalization_expression(objective_type[4:])
+                <= self.num_data_pts - 2,
+                doc="Constrains denominator of MSE to be positive",
+            )
+
+            # build MSE objective with complexity penalized
+            self.mse = pyo.Objective(
+                expr=self.aux_var_sse
+                / (
+                    self.num_data_pts
+                    - 1
+                    - self._get_penalization_expression(objective_type[4:])
+                )
+            )
+            return
+
         if objective_type.startswith("bic_"):
             # Build BIC objective
             # Supported options: "nodes", "depth", "depth_new", "csts", "wtd_operators", "operators"
