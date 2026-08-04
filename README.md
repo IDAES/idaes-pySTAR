@@ -11,3 +11,8 @@ The pySTAR toolkit is installed as part of the IDAES Integrated Platform (IDAES-
 # Funding Acknowledgements
 
 This work was conducted as part of the Institute for the Design of Advanced Energy Systems (IDAES) with support through the Crosscutting Research Program within the U.S. Department of Energy’s Office of Fossil Energy and Carbon Management (FECM).
+
+# Citation
+
+If you use this code please cite: "Sarwar, O. 2022, Algorithms for Interpretable High-Dimensional Regression, Carnegie Mellon University."
+
