@@ -1,8 +1,8 @@
 from gurobipy import nlfunc
 import pyomo.environ as pyo
-import bigm_operators as bop
-import hull_operators as hop
-from symbolic_regression import SymbolicRegressionModel
+import pystar.core.bigm_operators as bop
+import pystar.core.hull_operators as hop
+from pystar.core.symbolic_regression import SymbolicRegressionModel
 
 
 def _bigm_gurobi_formulation(srm: SymbolicRegressionModel):
