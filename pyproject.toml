@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools >= 64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idaes-pystar"
+authors = [
+    {name = "The IDAES and PrOMMiS Teams."}
+]
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.11, <=3.13"
+description = "Mixed Integer Nonlinear Programming Approach for Symbolic Regression"
+dependencies = [
+    "ipython",
+    "matplotlib",
+    "notebook",
+    "numpy",
+    "openpyxl",
+    "pandas",
+    "pyomo",
+]
+maintainers = [
+    {name = "The IDAES Team"}
+]
+dynamic = ["version"]
+
+
+[project.optional-dependencies]
+dev = [
+    "addheader",
+    "black",
+    "pylint",
+]
+
+test = [
+    "pytest",
+    "pytest-cov",
+]
+
+gurobi = [
+    "gurobipy"
+]
+
+[tool.setuptools]
+platforms = ["windows", "linux"]
+
+[tool.setuptools.dynamic]
+version = {attr = "pystar.VERSION"}
