@@ -18,6 +18,7 @@ dependencies = [
     "openpyxl",
     "pandas",
     "pyomo",
+    "sympy",
 ]
 maintainers = [
     {name = "The IDAES Team"}

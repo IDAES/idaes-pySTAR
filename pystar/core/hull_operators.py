@@ -9,7 +9,7 @@ from pyomo.core.base.block import BlockData, declare_custom_block
 from pyomo.environ import Var, Constraint
 import pyomo.environ as pyo
 
-from relaxations import mccormick_envelopes, outer_approximation
+from pystar.core.relaxations import mccormick_envelopes, outer_approximation
 
 LOGGER = logging.getLogger(__name__)
 

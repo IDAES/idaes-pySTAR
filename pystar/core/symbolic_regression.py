@@ -6,10 +6,10 @@ import pandas as pd
 import pyomo.environ as pyo
 from pyomo.environ import Var, Constraint
 
-# pylint: disable = import-error
-from bigm_operators import BigmSampleBlock, BigmSampleBlockData
-from expression_tree import ExpressionTree
-from hull_operators import HullSampleBlock
+# pylint: disable = no-name-in-module
+from pystar.core.bigm_operators import BigmSampleBlock, BigmSampleBlockData
+from pystar.core.expression_tree import ExpressionTree
+from pystar.core.hull_operators import BaseOperatorData, HullSampleBlock
 
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_UNARY_OPS = ["square", "sqrt", "log", "exp"]
@@ -869,10 +869,12 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
     def relax_nonconvex_constraints(self):
         """Convexifies all non-convex nonlinear constraints"""
-        if self.model_type == "bigm"
-            raise ValueError("Model type should be hull. MINLP cannot be convexified if big-m constraints are used.")
+        if self.model_type == "bigm":
+            raise ValueError(
+                "Model type should be hull. MINLP cannot be convexified "
+                "if big-m constraints are used."
+            )
 
-        from hull_operators import BaseOperatorData
         for blk in self.component_data_objects(pyo.Block):
             if isinstance(blk, BaseOperatorData):
                 blk.construct_convex_relaxation()
