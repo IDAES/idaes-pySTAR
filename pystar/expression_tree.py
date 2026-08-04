@@ -314,3 +314,17 @@ class ExpressionTree:
         m.sse = pyo.Objective(expr=sum(m.sample[:].square_of_residual))
 
         return m
+
+    def evaluate_expression(self, point: pd.DataFrame):
+        """Evaluates the expression for a single/multiple data points
+
+        Parameters
+        ----------
+        point : pd.DataFrame
+            Variable values.
+        """
+        cst_values = getattr(self, "cst_values", None)
+        expr = self.substitute_cst_values(cst_values)
+
+        data = {f"x{i+1}": point[point.columns[i]] for i in range(len(point.columns))}
+        return sp.lambdify(tuple(data), expr)(**data)
