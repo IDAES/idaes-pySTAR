@@ -1,10 +1,13 @@
 import numpy as np
 import pandas as pd
 import pyomo.environ as pyo
+from pystar import SymbolicRegressionModel, setup_logger
 
-from pystar.core.symbolic_regression import SymbolicRegressionModel
+setup_logger()  # Configures pystar logger
 
-# from pystar.core.utils import get_gurobi
+# # To save the log to a file, pass the log_file argument
+# import pathlib
+# setup_logger(log_file=pathlib.Path(__file__).parent / "my_log.log")
 
 np.random.seed(42)
 data = pd.DataFrame(
