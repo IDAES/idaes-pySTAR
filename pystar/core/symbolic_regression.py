@@ -117,6 +117,19 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         self.terminal_nodes_set = pyo.RangeSet(2 ** (tree_depth - 1), 2**tree_depth - 1)
         self.nodes_set = self.non_terminal_nodes_set.union(self.terminal_nodes_set)
 
+        # Lists of allowable operators
+        self.sum_diff_set = [op for op in ["sum", "diff"] if op in self.binary_operators_set] # A
+        self.mult_div_set = [op for op in ["mult", "div"] if op in self.binary_operators_set] # M
+
+        # Cartesian products to get lists of pairs, triples of operators
+        self.binary_op_pairs_set = (
+            list(product(self.sum_diff_set, repeat=2))
+            + list(product(self.mult_div_set, repeat=2))
+        ) # B_pairs
+        self.mult_div_triples_set = list(product(self.mult_div_set, repeat=3)) # M_triples 
+        self.sum_diff_triples_set = list(product(self.sum_diff_set, repeat=3)) # A_triples 
+        self.same_family_triples_set = self.mult_div_triples_set + self.sum_diff_triples_set # B_triples
+
         # Build the expression model
         self._build_expression_tree_model()
 
@@ -157,6 +170,9 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             domain=pyo.Binary,
             doc="If 1, an operator/operator is assigned to the node",
         )
+
+        self.select_node[1].fix(1) # Ensure that the root node is active
+
         self.select_operator = Var(
             self.nodes_set,
             self.collective_operator_set,
@@ -170,9 +186,9 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             for op in self.operators_set:
                 self.select_operator[n, op].fix(0)
 
-        # Constant must only be present in the left node (i.e., even-numbered nodes)
+        # Constant must only be present in the left node (i.e., even-numbered nodes) or root node
         for n in self.nodes_set:
-            if n % 2 == 1:
+            if n % 2 == 1 and n > 1:
                 self.select_operator[n, "cst"].fix(0)
 
         # Begin constructing essential constraints
@@ -284,6 +300,11 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         if objective_type == "sse":
             # build SSR objective
             self.sse = pyo.Objective(expr=self.sum_square_residual)
+            return
+
+        if objective_type == "null":
+            # build null objective
+            self.null = pyo.Objective(expr= 0)
             return
 
         if objective_type == "nodes":
@@ -556,10 +577,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
                 return Constraint.Skip
 
             # RHS is either 1 or delta_n
-            if use_unit_bound:
-                rhs = 1
-            else:
-                rhs = blk.select_node[n]
+            rhs = 1 if use_unit_bound else blk.select_node[n]
 
             # Do not choose the same operand for both the child nodes.
             return (
@@ -569,32 +587,62 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
     def add_constant_operation_cuts(self, use_unit_bound: bool = False):
         """
-        Adds constraints to remove expressions of type: cst (op_1) (cst (op_2) x1)
+        Adds constraints to remove expressions of categories 1, 2, 3.
+        Letters A, B and C represent subtrees.
+        
+        Category 1 eliminates:  B +- (cst +- A)
+        and: B */ (cst */ A).
+
+        Category 2 eliminates: (C */ A) */ (cst */ B)
+        and (C +- A) +- (cst +- B)
+        
+        Category 3 eliminates: cst * (cst +- A)
         """
-        op_list = []
-        if "sum" in self.binary_operators_set and "diff" in self.binary_operators_set:
-            op_list += list(product(["sum", "diff"], ["sum", "diff"]))
 
-        if "mult" in self.binary_operators_set and "div" in self.binary_operators_set:
-            op_list += list(product(["mult", "div"], ["mult", "div"]))
-
-        @self.Constraint(self.pre_non_terminal_nodes_set, op_list)
-        def redundant_cst_operations(blk, n, op1, op2):
-            # cst[2 * n] op1[n] (cst[4 * n + 2] op1[2 * n + 1] ....)
+        @self.Constraint(self.pre_non_terminal_nodes_set, self.binary_op_pairs_set)
+        def redundant_cst_operations_1(blk, n, op1, op2):
+            # Category 1 eliminates:  B +- (cst +- A) and B */ (cst */ A)
 
             # RHS is either 1 or delta_n
-            if use_unit_bound:
-                rhs = 1
-            else:
-                rhs = blk.select_node[n]
+            rhs = 1 if use_unit_bound else blk.select_node[n]
 
             return (
-                blk.select_operator[2 * n, "cst"]
-                + blk.select_operator[4 * n + 2, "cst"]
-                <= 3 * rhs
+                blk.select_operator[4 * n + 2, "cst"]
+                <= 2 * rhs
                 - blk.select_operator[n, op1]
                 - blk.select_operator[2 * n + 1, op2]
             )
+
+        @self.Constraint(self.pre_non_terminal_nodes_set, self.same_family_triples_set)
+        def redundant_cst_operations_2(blk, n, op1, op2, op3):
+            # Category 2 eliminates: (C */ A) */ (cst */ B) and (C +- A) +- (cst +- B)
+
+            # RHS is either 1 or delta_n
+            rhs = 1 if use_unit_bound else blk.select_node[n]
+
+            return (
+                blk.select_operator[4 * n + 2, "cst"]
+                <= 3 * rhs 
+                - blk.select_operator[n, op1]
+                - blk.select_operator[2 * n, op2]
+                - blk.select_operator[2 * n + 1, op3]
+            )
+
+        if "mult" in self.binary_operators_set:
+            @self.Constraint(self.pre_non_terminal_nodes_set, self.sum_diff_set)
+            def redundant_cst_operations_3(blk, n, op1):
+                # Category 3 eliminates: cst * (cst +- A)
+
+                # RHS is either 1 or delta_n
+                rhs = 1 if use_unit_bound else blk.select_node[n]
+
+                return (
+                    blk.select_operator[4 * n + 2, "cst"]
+                    + blk.select_operator[2 * n, "cst"]
+                    <= 3 * rhs 
+                    - blk.select_operator[n, "mult"]
+                    - blk.select_operator[2 * n + 1, op1]
+                )
 
     def add_associative_operation_cuts(self, use_unit_bound: bool = False):
         """
@@ -615,10 +663,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             # A * (B / C) and A / (C / B) are equivalent, so remove former
 
             # RHS is either 1 or delta_n
-            if use_unit_bound:
-                rhs = 1
-            else:
-                rhs = blk.select_node[n]
+            rhs = 1 if use_unit_bound else blk.select_node[n]
 
             return (
                 blk.select_operator[n, op1] + blk.select_operator[2 * n + 1, op2] <= rhs
@@ -632,10 +677,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         def _inverse_function_rule(blk, n, op_1, op_2):
 
             # RHS is either 1 or delta_n
-            if use_unit_bound:
-                rhs = 1
-            else:
-                rhs = blk.select_node[n]
+            rhs = 1 if use_unit_bound else blk.select_node[n]
 
             return (
                 blk.select_operator[n, op_1] + blk.select_operator[2 * n + 1, op_2]
@@ -689,10 +731,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             def implication_cuts_div_operator(blk, n, op):
 
                 # RHS is either 1 or delta_n
-                if use_unit_bound:
-                    rhs = 1
-                else:
-                    rhs = blk.select_node[n]
+                rhs = 1 if use_unit_bound else blk.select_node[n]
 
                 return (
                     blk.select_operator[n, "div"] + blk.select_operator[2 * n + 1, op]
@@ -709,10 +748,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             def implication_cuts_sqrt_operator(blk, n, op):
 
                 # RHS is either 1 or delta_n
-                if use_unit_bound:
-                    rhs = 1
-                else:
-                    rhs = blk.select_node[n]
+                rhs = 1 if use_unit_bound else blk.select_node[n]
 
                 return (
                     blk.select_operator[n, "sqrt"] + blk.select_operator[2 * n + 1, op]
@@ -730,10 +766,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             def implication_cuts_log_operator(blk, n, op):
 
                 # RHS is either 1 or delta_n
-                if use_unit_bound:
-                    rhs = 1
-                else:
-                    rhs = blk.select_node[n]
+                rhs = 1 if use_unit_bound else blk.select_node[n]
 
                 return (
                     blk.select_operator[n, "log"] + blk.select_operator[2 * n + 1, op]

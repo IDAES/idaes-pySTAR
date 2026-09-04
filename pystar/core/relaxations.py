@@ -201,6 +201,7 @@ def outer_approximation(
     points: str | list = "uniform_x",
     y_interval: Optional[tuple] = None,
     disjunct_var: pyo.Var | None = None,
+    tangent_interval: Optional[tuple] = None,
 ):
     if func_type == "convex":
         _outer_approximation_convex(
@@ -214,6 +215,7 @@ def outer_approximation(
             points,
             y_interval,
             disjunct_var,
+            tangent_interval,
         )
     elif func_type == "concave":
         _outer_approximation_concave(
@@ -227,6 +229,7 @@ def outer_approximation(
             points,
             y_interval,
             disjunct_var,
+            tangent_interval,
         )
     else:
         raise ValueError("Function must either be convex or concave")
@@ -243,6 +246,7 @@ def _outer_approximation_convex(
     points: str | list,
     y_interval: Optional[tuple],
     disjunct_var: pyo.Var | None = None,
+    tangent_interval: Optional[tuple] = None,
 ):
     xlb, xub = x.lb, x.ub
 
@@ -255,11 +259,13 @@ def _outer_approximation_convex(
         expr=y <= secant_slope * (x - xlb) + func(xlb) * disjunct_var
     )
 
+    tangent_xlb, tangent_xub = tangent_interval if tangent_interval is not None else (xlb, xub)
+
     # A number of tangents as linear underestimators
     tangency_points = _get_tangency_points(
         func=func,
-        xlb=xlb,
-        xub=xub,
+        xlb=tangent_xlb,
+        xub=tangent_xub,
         num_points=num_tangents,
         points=points,
         y_interval=y_interval,
@@ -285,6 +291,7 @@ def _outer_approximation_concave(
     points: str | list,
     y_interval: Optional[tuple],
     disjunct_var: pyo.Var | None = None,
+    tangent_interval: Optional[tuple] = None,
 ):
 
     xlb, xub = x.lb, x.ub
@@ -298,11 +305,13 @@ def _outer_approximation_concave(
         expr=y >= secant_slope * (x - xlb) + func(xlb) * disjunct_var
     )
 
+    tangent_xlb, tangent_xub = tangent_interval if tangent_interval is not None else (xlb, xub)
+
     # A number of tangents as linear overestimators
     tangency_points = _get_tangency_points(
         func=func,
-        xlb=xlb,
-        xub=xub,
+        xlb=tangent_xlb,
+        xub=tangent_xub,
         num_points=num_tangents,
         points=points,
         y_interval=y_interval,

@@ -50,16 +50,17 @@ class BaseOperatorData(BlockData):
             self.val_left_node.fix(0)
 
         if self._define_aux_var_right:
-            # Declare an auxiliary variable for operators with singularity issue
+            # Declare an auxiliary variable (ranging between 0 and 1) for operators with singularity issue
             self.aux_var_right = Var(
                 doc="Auxiliary variable for the right child",
                 bounds=(
-                    max(eps, lb),
+                    (eps if lb < eps else min(lb, 1)),
                     max(1, ub),
                 ),  # Ensure that the RHS is strictly positive
             )
 
             # Ensure that aux_var_right = (val_right_node if bin_var = 1 else 1)
+            # If bin_var = 0, then val_right_node = 0 and thus aux_var_right = 1
             self.calculate_aux_var_right = Constraint(
                 expr=self.aux_var_right == self.val_right_node + 1 - bin_var
             )
@@ -256,12 +257,7 @@ class SqrtOperatorData(BaseOperatorData):
         )
 
         # val_right_node must be non-negative in this case
-        self.val_right_node.setlb(
-            max(
-                pyo.value(self.symbolic_regression_model.eps_value),
-                self.val_right_node.lb,
-            )
-        )
+        self.val_right_node.setlb(0)
         self.add_bound_constraints(val_left_node=False)
 
     def construct_convex_relaxation(self):
@@ -279,6 +275,10 @@ class SqrtOperatorData(BaseOperatorData):
             points="uniform_x",
             y_interval=None,
             disjunct_var=self._bin_var_ref,
+            tangent_interval=(
+                max(pyo.value(self.symbolic_regression_model.eps_value), self.val_right_node.lb),
+                max(pyo.value(self.symbolic_regression_model.eps_value), self.val_right_node.ub),
+            ),
         )
 
     @staticmethod
@@ -296,7 +296,7 @@ class ExpOperatorData(BaseOperatorData):
         ub_val_right_node = self.val_right_node.ub
 
         self.val_right_node.setub(min(pyo.log(ub_val_node), ub_val_right_node))
-        self.val_node.setlb(max(0, self.val_node.lb))
+        self.val_node.setlb(0)
 
         # To avoid numerical issues, we do not let the lower bound of the
         # argument of the exp function go below -10
