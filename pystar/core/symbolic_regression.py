@@ -1,4 +1,4 @@
-from itertools import product
+from itertools import permutations, product
 import logging
 from typing import List, Optional
 import numpy as np
@@ -25,6 +25,7 @@ OPERATOR_WEIGHTS = {
     "log": 2,
     "exp": 2,
 }
+COMPLEX_OPERATORS = {"exp", "log", "sqrt", "div"}
 
 
 # pylint: disable = logging-fstring-interpolation
@@ -81,6 +82,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         }
         self.input_data_ref = data[input_columns].rename(columns=_col_name_map)
         self.output_data_ref = data[output_column]
+        self._max_tree_depth = tree_depth
         self.var_bounds = pyo.Param(
             ["lb", "ub"],
             initialize={"lb": var_bounds[0], "ub": var_bounds[1]},
@@ -118,17 +120,23 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         self.nodes_set = self.non_terminal_nodes_set.union(self.terminal_nodes_set)
 
         # Lists of allowable operators
-        self.sum_diff_set = [op for op in ["sum", "diff"] if op in self.binary_operators_set] # A
-        self.mult_div_set = [op for op in ["mult", "div"] if op in self.binary_operators_set] # M
+        self.sum_diff_set = self.binary_operators_set & {"sum", "diff"}  # A
+        self.mult_div_set = self.binary_operators_set & {"mult", "div"}  # M
 
         # Cartesian products to get lists of pairs, triples of operators
-        self.binary_op_pairs_set = (
-            list(product(self.sum_diff_set, repeat=2))
-            + list(product(self.mult_div_set, repeat=2))
-        ) # B_pairs
-        self.mult_div_triples_set = list(product(self.mult_div_set, repeat=3)) # M_triples 
-        self.sum_diff_triples_set = list(product(self.sum_diff_set, repeat=3)) # A_triples 
-        self.same_family_triples_set = self.mult_div_triples_set + self.sum_diff_triples_set # B_triples
+        self.binary_op_pairs_set = [
+            *product(self.sum_diff_set, repeat=2),
+            *product(self.mult_div_set, repeat=2),
+        ]  # B_pairs
+        self.mult_div_triples_set = list(
+            product(self.mult_div_set, repeat=3)
+        )  # M_triples
+        self.sum_diff_triples_set = list(
+            product(self.sum_diff_set, repeat=3)
+        )  # A_triples
+        self.same_family_triples_set = (
+            self.mult_div_triples_set + self.sum_diff_triples_set
+        )  # B_triples
 
         # Build the expression model
         self._build_expression_tree_model()
@@ -150,7 +158,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
     @property
     def max_depth(self):
         """Returns the maximum possible depth of a tree"""
-        return round(np.log2(len(self.nodes_set) + 1))
+        return self._max_tree_depth
 
     @property
     def model_type(self):
@@ -171,7 +179,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             doc="If 1, an operator/operator is assigned to the node",
         )
 
-        self.select_node[1].fix(1) # Ensure that the root node is active
+        self.select_node[1].fix(1)  # Ensure that the root node is active
 
         self.select_operator = Var(
             self.nodes_set,
@@ -187,9 +195,9 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
                 self.select_operator[n, op].fix(0)
 
         # Constant must only be present in the left node (i.e., even-numbered nodes) or root node
-        for n in self.nodes_set:
-            if n % 2 == 1 and n > 1:
-                self.select_operator[n, "cst"].fix(0)
+        LOGGER.info("Fixing select_operator[2 n + 1, cst] variables to zero.")
+        for n in self.non_terminal_nodes_set:
+            self.select_operator[2 * n + 1, "cst"].fix(0)
 
         # Begin constructing essential constraints
         # If a node is active, then either an operator or an operand
@@ -283,7 +291,12 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         self.non_zero_constant_value_blk.deactivate()
 
     # pylint: disable = attribute-defined-outside-init
-    def add_objective(self, objective_type: str = "sse"):
+    def add_objective(
+        self,
+        objective_type: str = "sse",
+        penalty_type: str = "nodes",
+        linearize_log_sse: bool = True,
+    ):
         """Appends objective function to the model
 
         Parameters
@@ -293,96 +306,24 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             Sum of squares of errors: "sse"
             Bayesian Information Criterion: "bic", by default "sse"
         """
+        self._objective_function_data = {
+            "objective_type": objective_type,
+            "penalty_type": penalty_type,
+        }
+        self._append_penalization_expressions(
+            depth_vars_type=(
+                penalty_type if penalty_type in ("depth", "depth_new") else None
+            )
+        )
+
+        if objective_type in self.penalty_metrics:
+            # This check holds true if the objective is sse or null, or one of the
+            # penalization metrics: nodes, csts, operators, etc.
+            self.cost_func = pyo.Objective(expr=self.penalty_metrics[objective_type])
+            return
 
         # Define quantities needed in the definitions of model selection criteria
         self.num_data_pts = len(self.output_data_ref)
-
-        if objective_type == "sse":
-            # build SSR objective
-            self.sse = pyo.Objective(expr=self.sum_square_residual)
-            return
-
-        if objective_type == "null":
-            # build null objective
-            self.null = pyo.Objective(expr= 0)
-            return
-
-        if objective_type == "nodes":
-            # build number of nodes objective
-            self.nodes = pyo.Objective(
-                expr=sum(self.select_node[n] for n in self.nodes_set)
-            )
-            return
-
-        if objective_type == "operators":
-            # build number of operators objective
-            self.operators_obj = pyo.Objective(
-                expr=sum(
-                    self.select_operator[n, op]
-                    for n in self.nodes_set
-                    for op in self.operators_set
-                )
-            )
-            return
-
-        if objective_type == "wtd_operators":
-            # build weighted operators objective
-            self.wtd_operators_obj = pyo.Objective(
-                expr=sum(
-                    OPERATOR_WEIGHTS[op] * self.select_operator[n, op]
-                    for n in self.nodes_set
-                    for op in self.operators_set
-                )
-            )
-            return
-
-        if objective_type == "csts":
-            # build number of constants objective
-            self.csts_obj = pyo.Objective(
-                expr=sum(self.select_operator[n, "cst"] for n in self.nodes_set)
-            )
-            return
-
-        if objective_type == "complex_ops":
-            # build number of complex operators (exp, log, sqrt, div) objective
-            _complex_ops = [
-                op for op in ["exp", "log", "sqrt", "div"] if op in self.operators_set
-            ]
-            self.complex_operators_obj = pyo.Objective(
-                expr=sum(
-                    self.select_operator[n, op]
-                    for n in self.nodes_set
-                    for op in _complex_ops
-                )
-            )
-            return
-
-        if objective_type == "op_no_cst":
-            # build operators minus constants objective:
-            # penalizes number of operators but not operations involving constants
-            self.operators_no_cst_obj = pyo.Objective(
-                expr=sum(
-                    self.select_operator[n, op]
-                    for n in self.nodes_set
-                    for op in self.operators_set
-                )
-                - sum(self.select_operator[n, "cst"] for n in self.nodes_set)
-            )
-            return
-
-        if objective_type == "wtd_op_no_cst":
-            # build weighted operators minus constants objective:
-            # penalizes operators by weight but not operations involving constants
-            self.wtd_operations_no_csts_obj = pyo.Objective(
-                expr=sum(
-                    OPERATOR_WEIGHTS[op] * self.select_operator[n, op]
-                    for n in self.nodes_set
-                    for op in self.operators_set
-                )
-                - sum(self.select_operator[n, "cst"] for n in self.nodes_set)
-            )
-            return
-
         # Defining an auxiliary variable for SSE for convenience
         # Note that y = y_data_1 is a valid/feasible expression. The SSE
         # value corresponding to this expression is used as an upper bound and
@@ -401,142 +342,190 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             doc="Computes the value of sum of squares of errors",
         )
 
-        if objective_type.startswith("mse_"):
+        if linearize_log_sse:
+            # pylint: disable = no-member
+            self.log_sse = pyo.Var(
+                bounds=(
+                    self.num_data_pts
+                    * pyo.log(self.aux_var_sse.lb / self.num_data_pts),
+                    self.num_data_pts
+                    * pyo.log(self.aux_var_sse.ub / self.num_data_pts),
+                ),
+                doc="Auxiliary variable for log of sum of square of errors",
+            )
+
+            self.compute_log_sse_value = pyo.Constraint(
+                expr=self.log_sse + self.num_data_pts * pyo.log(self.num_data_pts)
+                == self.num_data_pts * pyo.log(self.aux_var_sse)
+            )
+        else:
+            self.log_sse = pyo.Expression(
+                expr=self.num_data_pts * pyo.log(self.aux_var_sse)
+                - self.num_data_pts * pyo.log(self.num_data_pts)
+            )
+
+        penalty = self.penalty_metrics[penalty_type]
+        self.complexity_metrics = pyo.Expression(
+            ["bic", "aic", "hqic"],
+            initialize={
+                "bic": self.log_sse + pyo.log(self.num_data_pts) * penalty,
+                "aic": self.log_sse + 2 * penalty,
+                "hqic": self.log_sse
+                + 2 * pyo.log(pyo.log(self.num_data_pts)) * penalty,
+            },
+        )
+
+        if objective_type in self.complexity_metrics:
+            # This check holds true for bic, aic, or hqic and for any penalty type
+            self.cost_func = pyo.Objective(expr=self.complexity_metrics[objective_type])
+            return
+
+        # If the code reaches here, then the objective function must
+        # be either "mse" or "aic_cor"
+        if objective_type not in ("mse", "aic_cor"):
+            raise ValueError(f"Unrecognized value {objective_type} for objective_type")
+
+        # For both metrics, the maximum value of penalty is num_data_pts - 2
+        self.is_penalty_value = Var(
+            pyo.RangeSet(0, self.num_data_pts - 2),
+            within=pyo.Binary,
+            doc="If is_penalty_value[n] = 1, then penalty value = n",
+        )
+        self.compute_penalty_value = pyo.Constraint(
+            expr=penalty
+            == sum(n * self.is_penalty_value[n] for n in self.is_penalty_value)
+        )
+        self.select_unique_penalty_value = pyo.Constraint(
+            expr=sum(self.is_penalty_value[:]) == 1
+        )
+
+        if objective_type == "aic_cor":
+            coeffs = {
+                i: 2 * i + 2 * i * (i + 1) / (self.num_data_pts - 1 - i)
+                for i in range(self.num_data_pts - 1)
+            }
+            self.cost_func = pyo.Objective(
+                expr=self.log_sse
+                + sum(val * self.is_penalty_value[i] for i, val in coeffs.items())
+            )
+            return
+
+        # The only remaining objective type is mse
+        self.penalty_value_aux_sse = Var(
+            self.is_penalty_value.index_set(),
+            within=pyo.NonNegativeReals,
+            doc="Auxiliary variable to linearize is_penalty_value * aux_var_sse",
+        )
+
+        @self.Constraint(self.is_penalty_value.index_set())
+        def upper_bound_penalty_value_aux_sse(blk, i):
+            return (
+                blk.penalty_value_aux_sse[i]
+                <= blk.aux_var_sse.ub * blk.is_penalty_value[i]
+            )
+
+        self.compute_penalty_value_aux_sse = Constraint(
+            expr=sum(self.penalty_value_aux_sse[:]) == self.aux_var_sse
+        )
+
+        coeffs = {
+            i: 1 / (self.num_data_pts - 1 - i) for i in range(self.num_data_pts - 1)
+        }
+        self.cost_func = pyo.Objective(
+            expr=sum(val * self.penalty_value_aux_sse[i] for i, val in coeffs.items())
+        )
+
+    def _append_penalization_expressions(self, depth_vars_type: str | None = None):
+        """Returns a dictionary of penalization terms"""
+        penalty_metrics = {
+            "sse": self.sum_square_residual,
+            "null": 0,
+            "nodes": sum(self.select_node[:]),
+            "csts": sum(self.select_operator[:, "cst"]),
+            "operators": sum(self.select_operator.values()),
+            "wtd_operators": sum(
+                OPERATOR_WEIGHTS[op] * self.select_operator[n, op]
+                for n, op in self.select_operator.index_set()
+            ),
+            "complex_operators": sum(
+                sum(self.select_operator[n, op])
+                for n in self.nodes_set
+                for op in (self.operators_set & COMPLEX_OPERATORS)
+            ),
+        }
+        penalty_metrics["operators_no_csts"] = (
+            penalty_metrics["operators"] - penalty_metrics["csts"]
+        )
+        penalty_metrics["wtd_operators_no_csts"] = (
+            penalty_metrics["wtd_operators"] - penalty_metrics["csts"]
+        )
+
+        if depth_vars_type == "depth":
+            self.selected_depth_level = Var(within=pyo.NonNegativeReals)
+
+            @self.Constraint(self.nodes_set)
+            def compute_depth_level(blk, n):
+                return (
+                    blk.selected_depth_level
+                    >= int(np.ceil(np.log2(n + 1))) * blk.select_node[n]
+                )
+
+            penalty_metrics["depth"] = self.selected_depth_level
+
+        if depth_vars_type == "depth_new":
+            self._add_depth_level_variables()
+            penalty_metrics["depth_new"] = sum(self.select_depth.values())
+
+        self.penalty_metrics = pyo.Expression(
+            list(penalty_metrics), initialize=penalty_metrics
+        )
+
+    def _nonlinear_mse_or_aic_cor_objective(self):
+        """Keeps the nonlinear penalty term in the regularized objective as it is."""
+        # NOTE: Keeping this method temporarily until rigorous testing between
+        # the nonlinear and linear versions is complete. If the nonlinear approach is
+        # not beneficial, we can remove this method at that point.
+
+        objective_type = self._objective_function_data["objective_type"]
+        penalty_type = self._objective_function_data["penalty_type"]
+
+        self.del_component(self.cost_func)
+        self.del_component(self.compute_penalty_value)
+        self.del_component(self.select_unique_penalty_value)
+
+        if objective_type == "mse":
+            self.del_component(self.upper_bound_penalty_value_aux_sse)
+            self.del_component(self.compute_penalty_value_aux_sse)
+            self.del_component(self.penalty_value_aux_sse)
+            self.del_component(self.is_penalty_value)
+
             # Add constraint to ensure that the denominator of MSE is positive
             self.mse_complexity_limit = Constraint(
-                expr=self._get_penalization_expression(objective_type[4:])
-                <= self.num_data_pts - 2,
+                expr=self.penalty_metrics[penalty_type] <= self.num_data_pts - 2,
             )
 
             # build MSE objective with complexity penalized
             self.mse = pyo.Objective(
                 expr=self.aux_var_sse
-                / (
-                    self.num_data_pts
-                    - 1
-                    - self._get_penalization_expression(objective_type[4:])
-                )
+                / (self.num_data_pts - 1 - self.penalty_metrics[penalty_type])
             )
-            return
 
-        if objective_type.startswith("bic_"):
-            # Build BIC objective
-            # Supported options: "nodes", "depth", "depth_new", "csts", "wtd_operators", "operators"
-            self.bic = pyo.Objective(
-                expr=self.num_data_pts * pyo.log(self.aux_var_sse / self.num_data_pts)
-                + self._get_penalization_expression(objective_type[4:])
-                * pyo.log(self.num_data_pts)
-            )
-            return
+        if objective_type == "aic_cor":
+            self.del_component(self.is_penalty_value)
 
-        if objective_type.startswith("aic_cor_"):
             # Add constraint to ensure that the denominator of AICc is positive
             self.aicc_complexity_limit = Constraint(
-                expr=self._get_penalization_expression(objective_type[8:])
-                <= self.num_data_pts - 2,
+                expr=self.penalty_metrics[penalty_type] <= self.num_data_pts - 2,
             )
 
             # Build corrected AIC objective
             # Supported options: "nodes", "depth", "depth_new", "csts", "wtd_operators", "operators"
-            penalty = self._get_penalization_expression(objective_type[8:])
+            penalty = self.penalty_metrics[penalty_type]
             self.aic_cor = pyo.Objective(
-                expr=self.num_data_pts * pyo.log(self.aux_var_sse / self.num_data_pts)
+                expr=self.log_sse
                 + penalty * 2
                 + 2 * penalty * (penalty + 1) / (self.num_data_pts - penalty - 1)
             )
-            return
-
-        if objective_type.startswith("aic_"):
-            # Build AIC objective
-            # Supported options: "nodes", "depth", "depth_new", "csts", "wtd_operators", "operators"
-            self.aic = pyo.Objective(
-                expr=self.num_data_pts * pyo.log(self.aux_var_sse / self.num_data_pts)
-                + self._get_penalization_expression(objective_type[4:]) * 2
-            )
-            return
-
-        if objective_type.startswith("hqic_"):
-            # Build HQIC objective
-            # Supported options: "nodes", "depth", "depth_new", "csts", "wtd_operators", "operators"
-            self.hqic = pyo.Objective(
-                expr=self.num_data_pts * pyo.log(self.aux_var_sse / self.num_data_pts)
-                + self._get_penalization_expression(objective_type[5:])
-                * 2
-                * pyo.log(pyo.log(self.num_data_pts))
-            )
-            return
-
-        raise ValueError(
-            f"Specified objective_type: {objective_type} is not supported."
-        )
-
-    def _get_penalization_expression(self, penalty: str):
-        """Returns the penalization term"""
-        match penalty:
-            case "nodes":
-                return sum(self.select_node[n] for n in self.nodes_set)
-
-            case "csts":
-                return sum(self.select_operator[n, "cst"] for n in self.nodes_set)
-
-            case "operators":
-                return sum(
-                    self.select_operator[n, op]
-                    for n in self.nodes_set
-                    for op in self.operators_set
-                )
-
-            case "wtd_operators":
-                return sum(
-                    OPERATOR_WEIGHTS[op] * self.select_operator[n, op]
-                    for n in self.nodes_set
-                    for op in self.operators_set
-                )
-
-            case "depth":
-                self.selected_depth_level = Var(within=pyo.NonNegativeReals)
-
-                @self.Constraint(self.nodes_set)
-                def compute_depth_level(blk, n):
-                    return (
-                        blk.selected_depth_level
-                        >= int(np.ceil(np.log2(n + 1))) * blk.select_node[n]
-                    )
-
-                return self.selected_depth_level
-
-            case "depth_new":
-                self._add_depth_level_variables()
-                return sum(self.select_depth.values())
-
-            case "complex_ops":
-                complex_ops = [
-                    op
-                    for op in ["exp", "log", "sqrt", "div"]
-                    if op in self.operators_set
-                ]
-                return sum(
-                    self.select_operator[n, op]
-                    for n in self.nodes_set
-                    for op in complex_ops
-                )
-
-            case "op_no_cst":
-                return sum(
-                    self.select_operator[n, op]
-                    for n in self.nodes_set
-                    for op in self.operators_set
-                ) - sum(self.select_operator[n, "cst"] for n in self.nodes_set)
-
-            case "wtd_op_no_cst":
-                return sum(
-                    OPERATOR_WEIGHTS[op] * self.select_operator[n, op]
-                    for n in self.nodes_set
-                    for op in self.operators_set
-                ) - sum(self.select_operator[n, "cst"] for n in self.nodes_set)
-
-            case _:
-                raise ValueError(f"Unrecognized penalty type {penalty}")
 
     def _add_depth_level_variables(self):
         """Defines new binary variables to track the depth"""
@@ -589,13 +578,13 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         """
         Adds constraints to remove expressions of categories 1, 2, 3.
         Letters A, B and C represent subtrees.
-        
+
         Category 1 eliminates:  B +- (cst +- A)
         and: B */ (cst */ A).
 
         Category 2 eliminates: (C */ A) */ (cst */ B)
         and (C +- A) +- (cst +- B)
-        
+
         Category 3 eliminates: cst * (cst +- A)
         """
 
@@ -622,27 +611,32 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
             return (
                 blk.select_operator[4 * n + 2, "cst"]
-                <= 3 * rhs 
+                <= 3 * rhs
                 - blk.select_operator[n, op1]
                 - blk.select_operator[2 * n, op2]
                 - blk.select_operator[2 * n + 1, op3]
             )
 
-        if "mult" in self.binary_operators_set:
-            @self.Constraint(self.pre_non_terminal_nodes_set, self.sum_diff_set)
-            def redundant_cst_operations_3(blk, n, op1):
-                # Category 3 eliminates: cst * (cst +- A)
+        # NOTE: If the essential_op_set is empty, then the constraint
+        # container will not have any constraints.
+        essential_op_set = self.binary_operators_set & {"mult"}
 
-                # RHS is either 1 or delta_n
-                rhs = 1 if use_unit_bound else blk.select_node[n]
+        @self.Constraint(
+            self.pre_non_terminal_nodes_set, self.sum_diff_set, essential_op_set
+        )
+        def redundant_cst_operations_3(blk, n, op1, _):
+            # Category 3 eliminates: cst * (cst +- A)
 
-                return (
-                    blk.select_operator[4 * n + 2, "cst"]
-                    + blk.select_operator[2 * n, "cst"]
-                    <= 3 * rhs 
-                    - blk.select_operator[n, "mult"]
-                    - blk.select_operator[2 * n + 1, op1]
-                )
+            # RHS is either 1 or delta_n
+            rhs = 1 if use_unit_bound else blk.select_node[n]
+
+            return (
+                blk.select_operator[4 * n + 2, "cst"]
+                + blk.select_operator[2 * n, "cst"]
+                <= 3 * rhs
+                - blk.select_operator[n, "mult"]
+                - blk.select_operator[2 * n + 1, op1]
+            )
 
     def add_associative_operation_cuts(self, use_unit_bound: bool = False):
         """
@@ -650,12 +644,11 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         A + B - C and A - (C - B) are equivalent, so remove former.
         A * (B / C) and A / (C / B) are equivalent, so remove former
         """
-        op_list = []
-        if "sum" in self.binary_operators_set and "diff" in self.binary_operators_set:
-            op_list += [("sum", "diff")]
-
-        if "mult" in self.binary_operators_set and "div" in self.binary_operators_set:
-            op_list += [("mult", "div")]
+        op_list = [
+            op
+            for op in [("sum", "diff"), ("mult", "div")]
+            if set(op).issubset(self.binary_operators_set)
+        ]
 
         @self.Constraint(self.pre_non_terminal_nodes_set, op_list)
         def redundant_associative_operations(blk, n, op1, op2):
@@ -674,7 +667,14 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         Adds cuts to remove composition of inverse functions: exp(log(.)); square(sqrt(.))
         """
 
-        def _inverse_function_rule(blk, n, op_1, op_2):
+        op_list = [
+            op
+            for op in [*permutations(["exp", "log"]), *permutations(["square", "sqrt"])]
+            if set(op).issubset(self.unary_operators_set)
+        ]
+
+        @self.Constraint(self.pre_non_terminal_nodes_set, op_list)
+        def redundant_inv_func_comp_cuts(blk, n, op_1, op_2):
 
             # RHS is either 1 or delta_n
             rhs = 1 if use_unit_bound else blk.select_node[n]
@@ -682,20 +682,6 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             return (
                 blk.select_operator[n, op_1] + blk.select_operator[2 * n + 1, op_2]
                 <= rhs
-            )
-
-        if "exp" in self.unary_operators_set and "log" in self.unary_operators_set:
-            self.redundant_inv_op_exp_log = Constraint(
-                self.pre_non_terminal_nodes_set,
-                [("exp", "log"), ("log", "exp")],
-                rule=_inverse_function_rule,
-            )
-
-        if "square" in self.unary_operators_set and "sqrt" in self.unary_operators_set:
-            self.redundant_inv_op_square_sqrt = Constraint(
-                self.pre_non_terminal_nodes_set,
-                [("square", "sqrt"), ("sqrt", "square")],
-                rule=_inverse_function_rule,
             )
 
     def add_symmetry_breaking_cuts(
