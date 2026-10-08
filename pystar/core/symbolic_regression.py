@@ -588,42 +588,26 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
     def add_constant_operation_cuts(self, use_unit_bound: bool = False):
         """
-        Adds constraints to remove expressions of categories 1, 2, 3.
+        Adds constraints to remove expressions of categories 2, 3.
         Letters A, B and C represent subtrees.
-        
-        Category 1 eliminates:  B +- (cst +- A)
-        and: B */ (cst */ A).
 
-        Category 2 eliminates: (C */ A) */ (cst */ B)
-        and (C +- A) +- (cst +- B)
+        Category 2 eliminates: (cst */ A) */ (cst */ B),
+        and (cst +- A) +- (cst +- B).
         
         Category 3 eliminates: cst * (cst +- A)
         """
 
-        @self.Constraint(self.pre_non_terminal_nodes_set, self.binary_op_pairs_set)
-        def redundant_cst_operations_1(blk, n, op1, op2):
-            # Category 1 eliminates:  B +- (cst +- A) and B */ (cst */ A)
-
-            # RHS is either 1 or delta_n
-            rhs = 1 if use_unit_bound else blk.select_node[n]
-
-            return (
-                blk.select_operator[4 * n + 2, "cst"]
-                <= 2 * rhs
-                - blk.select_operator[n, op1]
-                - blk.select_operator[2 * n + 1, op2]
-            )
-
         @self.Constraint(self.pre_non_terminal_nodes_set, self.same_family_triples_set)
         def redundant_cst_operations_2(blk, n, op1, op2, op3):
-            # Category 2 eliminates: (C */ A) */ (cst */ B) and (C +- A) +- (cst +- B)
+            # Category 2 eliminates: (cst */ A) */ (cst */ B) and (cst +- A) +- (cst +- B).
 
             # RHS is either 1 or delta_n
             rhs = 1 if use_unit_bound else blk.select_node[n]
 
             return (
                 blk.select_operator[4 * n + 2, "cst"]
-                <= 3 * rhs 
+                + blk.select_operator[4 * n, "cst"]
+                <= 4 * rhs 
                 - blk.select_operator[n, op1]
                 - blk.select_operator[2 * n, op2]
                 - blk.select_operator[2 * n + 1, op3]
@@ -683,7 +667,8 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         exp(A) / exp(B) and exp(A - B) are equivalent, so remove former.
 
         square(A) * square(B) and square(A * B) are equivalent, so remove former.
-        square(A) / square(B) and square(A / B) are equivalent, so remove former.
+        square(A) / square(B) and square(A / B) are equivalent, so remove latter, because denominator is enforced to be positive in hull.
+        
         sqrt(A) * sqrt(B) and sqrt(A * B) are equivalent, so remove former.
         sqrt(A) / sqrt(B) and sqrt(A / B) are equivalent, so remove former.
 
@@ -692,9 +677,6 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         Keep both log(A^2) and 2*log(A). (no constraint added)
         log(sqrt(A)) and 0.5*log(A) are equivalent, so remove former.
 
-        Extended associative:
-        (A/B)/(C/D) and (A*D)/(B*C) and (A/B)*(D/C) are equivalent, so remove 2nd. 3rd already removed by associative
-        (A-B)-(C-D) and (A+D)-(B+C) and (A-B)+(D-C) are equivalent, so remove 2nd. 3rd already removed by associative.
         """
 
         if "mult" in self.binary_operators_set and "sum" in self.binary_operators_set and "exp" in self.unary_operators_set:
@@ -742,14 +724,13 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         if "div" in self.binary_operators_set and "square" in self.unary_operators_set:
             @self.Constraint(self.pre_non_terminal_nodes_set)
             def redundant_similar_operations_square_div(blk, n):
-                # Replace square(A) / square(B) with square(A / B).
+                # Replace square(A / B) with square(A) / square(B).
                 rhs = 1 if use_unit_bound else blk.select_node[n]
 
                 return (
-                    blk.select_operator[n, "div"]
-                    + blk.select_operator[2 * n, "square"]
-                    + blk.select_operator[2 * n + 1, "square"]
-                    <= 2 * rhs
+                    blk.select_operator[n, "square"]
+                    + blk.select_operator[2 * n + 1, "div"]
+                    <= rhs
                 )
 
         if "mult" in self.binary_operators_set and "sqrt" in self.unary_operators_set:
@@ -813,30 +794,6 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
                 return (
                     blk.select_operator[n, "log"] + blk.select_operator[2 * n + 1, "sqrt"] <= rhs
                 )   
-
-        if "div" in self.binary_operators_set and "mult" in self.binary_operators_set:
-            @self.Constraint(self.pre_non_terminal_nodes_set)
-            def redundant_similar_operations_div(blk, n):
-                # (A/B)/(C/D) and (A*D)/(B*C) and (A/B)*(D/C) are equivalent, so remove 2nd
-
-                # RHS is either 1 or delta_n
-                rhs = 1 if use_unit_bound else blk.select_node[n]
-
-                return (
-                    blk.select_operator[n, "div"] + blk.select_operator[2 * n, "mult"] + blk.select_operator[2 * n + 1, "mult"] <= 2* rhs
-                )
-
-        if "sum" in self.binary_operators_set and "diff" in self.binary_operators_set:
-            @self.Constraint(self.pre_non_terminal_nodes_set)
-            def redundant_similar_operations_diff(blk, n):
-                # (A-B)-(C-D) and (A+D)-(B+C) and (A-B)+(D-C) are equivalent, so remove 2nd
-
-                # RHS is either 1 or delta_n
-                rhs = 1 if use_unit_bound else blk.select_node[n]
-
-                return (
-                    blk.select_operator[n, "diff"] + blk.select_operator[2 * n, "sum"] + blk.select_operator[2 * n + 1, "sum"] <= 2* rhs
-                )
            
 
     def add_inverse_function_composition_cuts(self, use_unit_bound: bool = False):
@@ -864,7 +821,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         if "square" in self.unary_operators_set and "sqrt" in self.unary_operators_set:
             self.redundant_inv_op_square_sqrt = Constraint(
                 self.pre_non_terminal_nodes_set,
-                [("square", "sqrt"), ("sqrt", "square")],
+                [("square", "sqrt")], # , ("sqrt", "square") models |A|
                 rule=_inverse_function_rule,
             )
 
