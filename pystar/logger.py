@@ -79,6 +79,9 @@ def setup_logger(
     logger = logging.getLogger("gurobipy")
     logger.propagate = False
 
+    logger = logging.getLogger("pyomo.contrib.appsi.solvers.gurobi")
+    logger.propagate = False
+
     # pylint: disable = logging-fstring-interpolation
     logger = logging.getLogger(__name__)
     logger.info("=" * 80)

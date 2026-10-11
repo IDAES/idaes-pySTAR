@@ -1,5 +1,6 @@
 from itertools import product
 import logging
+import math
 from typing import List, Optional
 import numpy as np
 import pandas as pd
@@ -589,40 +590,41 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         """
         Adds constraints to remove expressions of categories 1, 2, 3.
         Letters A, B and C represent subtrees.
-        
-        Category 1 eliminates:  B +- (cst +- A)
-        and: B */ (cst */ A).
 
-        Category 2 eliminates: (C */ A) */ (cst */ B)
-        and (C +- A) +- (cst +- B)
+        Category 1 eliminates: cst +- (cst +- A),
+        and cst */ (cst */ A).
+        These constraints can be used only in the weak form,
+        since both sub-expressions of n may include constants.
+        
+        Category 2 eliminates: (cst */ A) */ (cst */ B),
+        and (cst +- A) +- (cst +- B).
         
         Category 3 eliminates: cst * (cst +- A)
         """
 
         @self.Constraint(self.pre_non_terminal_nodes_set, self.binary_op_pairs_set)
         def redundant_cst_operations_1(blk, n, op1, op2):
-            # Category 1 eliminates:  B +- (cst +- A) and B */ (cst */ A)
-
-            # RHS is either 1 or delta_n
+            # Category 1 eliminates: cst +- (cst +- A), and: cst */ (cst */ A).
             rhs = 1 if use_unit_bound else blk.select_node[n]
-
             return (
-                blk.select_operator[4 * n + 2, "cst"]
-                <= 2 * rhs
+                blk.select_operator[2 * n, "cst"]
+                + blk.select_operator[4 * n + 2, "cst"]
+                <= 3 * rhs
                 - blk.select_operator[n, op1]
                 - blk.select_operator[2 * n + 1, op2]
             )
 
         @self.Constraint(self.pre_non_terminal_nodes_set, self.same_family_triples_set)
         def redundant_cst_operations_2(blk, n, op1, op2, op3):
-            # Category 2 eliminates: (C */ A) */ (cst */ B) and (C +- A) +- (cst +- B)
+            # Category 2 eliminates: (cst */ A) */ (cst */ B) and (cst +- A) +- (cst +- B).
 
             # RHS is either 1 or delta_n
             rhs = 1 if use_unit_bound else blk.select_node[n]
 
             return (
                 blk.select_operator[4 * n + 2, "cst"]
-                <= 3 * rhs 
+                + blk.select_operator[4 * n, "cst"]
+                <= 4 * rhs 
                 - blk.select_operator[n, op1]
                 - blk.select_operator[2 * n, op2]
                 - blk.select_operator[2 * n + 1, op3]
@@ -647,20 +649,27 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
     def add_associative_operation_cuts(self, use_unit_bound: bool = False):
         """
         Adds cuts to remove associative operator combinations.
-        A + B - C and A - (C - B) are equivalent, so remove former.
-        A * (B / C) and A / (C / B) are equivalent, so remove former
+        A + B - C and A - (C - B) are equivalent, so remove latter
+        A * (B / C) and A / (C / B) are semi-equivalent, so remove latter (the non-dominant)
+
+        We remove the expression that Kim et. al (2023) retain,
+        and we keep the one that they remove.        
+
+        Extended associative NOT added. They can prune a class of equivalent solutions with ordinary associative.
+        (A/B)/(C/D) and (A*D)/(B*C) and (A/B)*(D/C) are semi-equivalent. 3rd already removed by associative
+        (A-B)-(C-D) and (A+D)-(B+C) and (A-B)+(D-C) are semi-equivalent. 3rd already removed by associative.
         """
         op_list = []
-        if "sum" in self.binary_operators_set and "diff" in self.binary_operators_set:
-            op_list += [("sum", "diff")]
+        if {"sum", "diff"}.issubset(self.binary_operators_set):
+            op_list += [("diff", "diff")]
 
-        if "mult" in self.binary_operators_set and "div" in self.binary_operators_set:
-            op_list += [("mult", "div")]
+        if {"mult", "div"}.issubset(self.binary_operators_set):
+            op_list += [("div", "div")]
 
         @self.Constraint(self.pre_non_terminal_nodes_set, op_list)
         def redundant_associative_operations(blk, n, op1, op2):
-            # A + B - C and A - (C - B) are equivalent, so remove former
-            # A * (B / C) and A / (C / B) are equivalent, so remove former
+            # A + B - C and A - (C - B) are semi-equivalent, so remove latter
+            # A * (B / C) and A / (C / B) are semi-equivalent, so remove latter
 
             # RHS is either 1 or delta_n
             rhs = 1 if use_unit_bound else blk.select_node[n]
@@ -668,6 +677,145 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             return (
                 blk.select_operator[n, op1] + blk.select_operator[2 * n + 1, op2] <= rhs
             )
+
+    def add_similar_operation_cuts(self, use_unit_bound: bool = False):
+        """
+        In general prefer: 1) dominant expressions, i.e. with largest domains of sub-expressions
+        2) expressions requiring fewer nodes/operators
+        3) expressions not contradicting symmetry-breaking constraints
+        
+        Warning: some feasible solutions might be pruned due to bounds violation,
+        same issue with associative operation constraints.
+
+        exp(A) * exp(B) and exp(A + B) are equivalent, so remove former.
+        exp(A) / exp(B) and exp(A - B) are equivalent, so remove former.
+
+        square(A) * square(B) and square(A * B) are equivalent, so remove former.
+        square(A) / square(B) and square(A / B) are equivalent, so remove latter, because denominator is enforced to be positive in hull.
+        (when abs operator is added, we will prune the former for consistency.)
+
+        sqrt(A) * sqrt(B) and sqrt(A * B) are semi-equivalent, so remove former (non-dominant).
+        sqrt(A) / sqrt(B) and sqrt(A / B) are semi-equivalent, so remove former (non-dominant).
+
+        log(A) + log(B) and log(A*B) are semi-equivalent, so remove former (non-dominant). 
+        log(A) - log(B) and log(A/B) are semi-equivalent, so remove former (non-dominant).
+        Keep both log(A^2) and 2*log(A). (when abs operator is added, we will prune the former.)
+        log(sqrt(A)) and 0.5*log(A) are equivalent, so remove former.
+
+        """
+
+        if {"mult", "sum"}.issubset(self.binary_operators_set) and "exp" in self.unary_operators_set:
+            @self.Constraint(self.pre_non_terminal_nodes_set)
+            def redundant_similar_operations_exp(blk, n):
+                # exp(A) * exp(B) and exp(A + B) are equivalent, so remove former
+
+                # RHS is either 1 or delta_n
+                rhs = 1 if use_unit_bound else blk.select_node[n]
+
+                return (
+                    blk.select_operator[n, "mult"] + blk.select_operator[2 * n, "exp"] + blk.select_operator[2 * n + 1, "exp"] <= 2* rhs
+                )
+
+        if {"div", "diff"}.issubset(self.binary_operators_set) and "exp" in self.unary_operators_set:
+            @self.Constraint(self.pre_non_terminal_nodes_set)
+            def redundant_similar_operations_exp_div(blk, n):
+                # Replace exp(A) / exp(B) with exp(A - B).
+                rhs = 1 if use_unit_bound else blk.select_node[n]
+
+                return (
+                    blk.select_operator[n, "div"]
+                    + blk.select_operator[2 * n, "exp"]
+                    + blk.select_operator[2 * n + 1, "exp"]
+                    <= 2 * rhs
+                )
+
+        if "mult" in self.binary_operators_set and "square" in self.unary_operators_set:
+            @self.Constraint(self.pre_non_terminal_nodes_set)
+            def redundant_similar_operations_square_mult(blk, n):
+                # Replace square(A) * square(B) with square(A * B).
+                rhs = 1 if use_unit_bound else blk.select_node[n]
+
+                return (
+                    blk.select_operator[n, "mult"]
+                    + blk.select_operator[2 * n, "square"]
+                    + blk.select_operator[2 * n + 1, "square"]
+                    <= 2 * rhs
+                )
+
+        if "div" in self.binary_operators_set and "square" in self.unary_operators_set:
+            @self.Constraint(self.pre_non_terminal_nodes_set)
+            def redundant_similar_operations_square_div(blk, n):
+                # Replace square(A / B) with square(A) / square(B).
+                rhs = 1 if use_unit_bound else blk.select_node[n]
+
+                return (
+                    blk.select_operator[n, "square"]
+                    + blk.select_operator[2 * n + 1, "div"]
+                    <= rhs
+                )
+
+        if "mult" in self.binary_operators_set and "sqrt" in self.unary_operators_set:
+            @self.Constraint(self.pre_non_terminal_nodes_set)
+            def redundant_similar_operations_sqrt_mult(blk, n):
+                # Replace sqrt(A) * sqrt(B) with sqrt(A * B).
+                rhs = 1 if use_unit_bound else blk.select_node[n]
+
+                return (
+                    blk.select_operator[n, "mult"]
+                    + blk.select_operator[2 * n, "sqrt"]
+                    + blk.select_operator[2 * n + 1, "sqrt"]
+                    <= 2 * rhs
+                )
+
+        if "div" in self.binary_operators_set and "sqrt" in self.unary_operators_set:
+            @self.Constraint(self.pre_non_terminal_nodes_set)
+            def redundant_similar_operations_sqrt_div(blk, n):
+                # Replace sqrt(A) / sqrt(B) with sqrt(A / B).
+                rhs = 1 if use_unit_bound else blk.select_node[n]
+
+                return (
+                    blk.select_operator[n, "div"]
+                    + blk.select_operator[2 * n, "sqrt"]
+                    + blk.select_operator[2 * n + 1, "sqrt"]
+                    <= 2 * rhs
+                )
+
+        if {"sum", "mult"}.issubset(self.binary_operators_set) and "log" in self.unary_operators_set:
+            @self.Constraint(self.pre_non_terminal_nodes_set)
+            def redundant_similar_operations_log(blk, n):
+                # log(A) + log(B) and log(A*B) are equivalent, so remove former
+
+                # RHS is either 1 or delta_n
+                rhs = 1 if use_unit_bound else blk.select_node[n]
+
+                return (
+                    blk.select_operator[n, "sum"] + blk.select_operator[2 * n, "log"] + blk.select_operator[2 * n + 1, "log"] <= 2* rhs
+                )
+
+        if {"diff", "div"}.issubset(self.binary_operators_set) and "log" in self.unary_operators_set:
+            @self.Constraint(self.pre_non_terminal_nodes_set)
+            def redundant_similar_operations_log_diff(blk, n):
+                # log(A) - log(B) and log(A/B) are equivalent, so remove former
+
+                # RHS is either 1 or delta_n
+                rhs = 1 if use_unit_bound else blk.select_node[n]
+
+                return (
+                    blk.select_operator[n, "diff"] + blk.select_operator[2 * n, "log"] + blk.select_operator[2 * n + 1, "log"] <= 2* rhs
+                )
+
+        if "mult" in self.binary_operators_set and {"sqrt", "log"}.issubset(self.unary_operators_set):
+            @self.Constraint(self.pre_non_terminal_nodes_set)
+            def redundant_similar_operations_log_sqrt(blk, n):
+                # log(sqrt(A)) and 0.5*log(A) are equivalent, so remove former.
+
+                # RHS is either 1 or delta_n
+                rhs = 1 if use_unit_bound else blk.select_node[n]
+
+                return (
+                    blk.select_operator[n, "log"] + blk.select_operator[2 * n + 1, "sqrt"] <= rhs
+                )   
+           
 
     def add_inverse_function_composition_cuts(self, use_unit_bound: bool = False):
         """
@@ -694,7 +842,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         if "square" in self.unary_operators_set and "sqrt" in self.unary_operators_set:
             self.redundant_inv_op_square_sqrt = Constraint(
                 self.pre_non_terminal_nodes_set,
-                [("square", "sqrt"), ("sqrt", "square")],
+                [("square", "sqrt"), ("sqrt", "square")], # ("sqrt", "square") models |A|, but we prune it
                 rule=_inverse_function_rule,
             )
 

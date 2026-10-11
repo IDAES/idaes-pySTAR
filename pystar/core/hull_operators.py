@@ -480,7 +480,7 @@ class HullSampleBlockData(BlockData):
             return blk.node[2 * n].val_node - blk.node[2 * n + 1].val_node >= (
                 vlb - vub
             ) * (
-                2*rhs - (1 - srm.select_operator[2*n, "cst"])
+                2*rhs - (rhs - srm.select_operator[2*n, "cst"])
                 - sum(srm.select_operator[n, op] for op in symmetric_operators)
             )
 
