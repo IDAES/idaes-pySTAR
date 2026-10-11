@@ -321,6 +321,20 @@ class ExpOperatorData(BaseOperatorData):
                 1 - op_bin_var[n]
             )
 
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def auxiliary_lower_bound(blk, n):
+            return (
+                blk.aux_var_exp[n]
+                >= blk.aux_var_exp[n].lb * op_bin_var[n]
+            )
+
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def auxiliary_upper_bound(blk, n):
+            return (
+                blk.aux_var_exp[n]
+                <= blk.aux_var_exp[n].ub * op_bin_var[n]
+            )
+
     def construct_convex_relaxation(self):
         raise NotImplementedError()
 
@@ -432,6 +446,14 @@ class LogOperatorData(BaseOperatorData):
             bigm = vlb - blk.aux_var_log[n].ub
             return val_node[2 * n + 1] - blk.aux_var_log[n] >= bigm * (
                 1 - op_bin_var[n]
+            )
+
+        # If log not selected at n, fix the aux var value to eps 
+        @self.Constraint(srm.non_terminal_nodes_set)
+        def auxiliary_upper_bound(blk, n):
+            return blk.aux_var_log[n] <= (
+                srm.eps_value
+                + (vub - srm.eps_value) * op_bin_var[n]
             )
 
     def construct_convex_relaxation(self):
@@ -563,7 +585,7 @@ class BigmSampleBlockData(BlockData):
                 rhs = srm.select_node[n]
 
             return (blk.val_node[2 * n] - blk.val_node[2 * n + 1]) >= (vlb - vub) * (
-                rhs - sum(srm.select_operator[n, op] for op in symmetric_operators)
+                2* rhs - (rhs - srm.select_operator[2*n, "cst"]) - sum(srm.select_operator[n, op] for op in symmetric_operators)
             )
 
     def compare_node_values(self):
