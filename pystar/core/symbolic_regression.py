@@ -128,12 +128,8 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             *product(self.sum_diff_set, repeat=2),
             *product(self.mult_div_set, repeat=2),
         ]  # B_pairs
-        self.mult_div_triples_set = list(
-            product(self.mult_div_set, repeat=3)
-        )  # M_triples
-        self.sum_diff_triples_set = list(
-            product(self.sum_diff_set, repeat=3)
-        )  # A_triples
+        self.mult_div_triples_set = [*product(self.mult_div_set, repeat=3)]  # M_triples
+        self.sum_diff_triples_set = [*product(self.sum_diff_set, repeat=3)]  # A_triples
         self.same_family_triples_set = (
             self.mult_div_triples_set + self.sum_diff_triples_set
         )  # B_triples
