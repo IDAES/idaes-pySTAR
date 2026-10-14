@@ -136,27 +136,34 @@ def get_gurobi(srm: SymbolicRegressionModel, options: dict | None = None):
     solver.options.update(options)
     return solver
 
-def only_tree_structure(srm: SymbolicRegressionModel):
+
+def only_tree_structure(srm: SymbolicRegressionModel, keep_constraints: bool = True):
     """SR model with tree-structure constraints only.
     That is, value-defining constraints are excluded."""
 
-    srm.samples.deactivate()
-    srm.constant_lb_con.deactivate()
-    srm.constant_ub_con.deactivate()
+    if keep_constraints:
+        srm.samples.deactivate()
+        srm.constant_lb_con.deactivate()
+        srm.constant_ub_con.deactivate()
+    else:
+        srm.del_component(srm.samples)
+        srm.del_component(srm.constant_lb_con)
+        srm.del_component(srm.constant_ub_con)
 
     return srm
+
 
 def no_right_cst_constraints(srm: SymbolicRegressionModel):
-    @srm.Constraint(srm.nodes_set)
+    @srm.Constraint(srm.non_terminal_nodes_set)
     def no_right_cst_con(blk, n):
-        if n % 2 == 1 and n > 1:
-            return blk.select_operator[n, "cst"] == 0
-        else:
-            return pyo.Constraint.Skip
+        return blk.select_operator[2 * n + 1, "cst"] == 0
 
     return srm
 
-def weak_add_constant_operation_cuts_1(srm: SymbolicRegressionModel, use_unit_bound=True):
+
+def weak_add_constant_operation_cuts_1(
+    srm: SymbolicRegressionModel, use_unit_bound=True
+):
     "Category 1 eliminates: cst +- (cst +- A), and: cst */ (cst */ A)."
 
     @srm.Constraint(srm.pre_non_terminal_nodes_set, srm.binary_op_pairs_set)
@@ -166,16 +173,18 @@ def weak_add_constant_operation_cuts_1(srm: SymbolicRegressionModel, use_unit_bo
         rhs = 1 if use_unit_bound else blk.select_node[n]
 
         return (
-            blk.select_operator[2 * n, "cst"]
-            + blk.select_operator[4 * n + 2, "cst"]
+            blk.select_operator[2 * n, "cst"] + blk.select_operator[4 * n + 2, "cst"]
             <= 3 * rhs
             - blk.select_operator[n, op1]
             - blk.select_operator[2 * n + 1, op2]
         )
-    
+
     return srm
 
-def weak_add_constant_operation_cuts_2(srm: SymbolicRegressionModel, use_unit_bound=True):
+
+def weak_add_constant_operation_cuts_2(
+    srm: SymbolicRegressionModel, use_unit_bound=True
+):
     "Category 2 eliminates: (cst */ A) */ (cst */ B) and (cst +- A) +- (cst +- B)."
 
     @srm.Constraint(srm.pre_non_terminal_nodes_set, srm.same_family_triples_set)
@@ -185,9 +194,8 @@ def weak_add_constant_operation_cuts_2(srm: SymbolicRegressionModel, use_unit_bo
         rhs = 1 if use_unit_bound else blk.select_node[n]
 
         return (
-            blk.select_operator[4 * n + 2, "cst"]
-            + blk.select_operator[2 * n, "cst"]
-            <= 4 * rhs 
+            blk.select_operator[4 * n + 2, "cst"] + blk.select_operator[2 * n, "cst"]
+            <= 4 * rhs
             - blk.select_operator[n, op1]
             - blk.select_operator[2 * n, op2]
             - blk.select_operator[2 * n + 1, op3]
@@ -195,7 +203,10 @@ def weak_add_constant_operation_cuts_2(srm: SymbolicRegressionModel, use_unit_bo
 
     return srm
 
-def remove_category_cst_manipulation_cut(srm: SymbolicRegressionModel, remove_category: int):
+
+def remove_category_cst_manipulation_cut(
+    srm: SymbolicRegressionModel, remove_category: int
+):
     """Remove certain category of redundant constant manipulation cuts from the model."""
 
     if remove_category == 1:
