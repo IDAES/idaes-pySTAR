@@ -1076,8 +1076,9 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
                 "if big-m constraints are used."
             )
 
-        for blk in self.component_data_objects(pyo.Block):
-            if isinstance(blk, BaseOperatorData):
+        # Relax only active blocks, i.e. disjuncts with feasible domains
+        for blk in self.component_data_objects(pyo.Block, active=True):
+            if isinstance(blk, BaseOperatorData) and blk.active:
                 blk.construct_convex_relaxation()
 
     def get_selected_operators(self):

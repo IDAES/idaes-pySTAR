@@ -9,6 +9,7 @@ from pyomo.core.base.block import BlockData, declare_custom_block
 from pyomo.environ import Var, Constraint
 import pyomo.environ as pyo
 from pyomo.contrib.fbbt.fbbt import fbbt
+from pyomo.common.errors import InfeasibleConstraintException
 
 from pystar.core.relaxations import mccormick_envelopes, mccormick_envelopes_aux, outer_approximation
 
@@ -67,8 +68,35 @@ class BaseOperatorData(BlockData):
             )
 
         # Add operator-specific constraints
+        binary_lb, binary_ub = bin_var.bounds
         try:
             self.build_operator_model()
+
+        # We reach the following block if the domain of a disjunct is infeasible after fbbt
+        # In that case, eliminate the disjunct
+        except InfeasibleConstraintException:
+
+            # If bin_var = 1, do not disable the operator block
+            if (bin_var.fixed and pyo.value(bin_var) != 0) or binary_lb > 0:
+                raise
+
+            # Disable the disjunct/operator
+            # Fix disjunction variable to 0
+            bin_var.setlb(binary_lb)
+            bin_var.setub(binary_ub)
+            bin_var.fix(0)
+
+            # Fix continuous variables to 0
+            for name in ("val_node", "val_left_node", "val_right_node", "aux_var_right"):
+                var = getattr(self, name, None)
+                if var is not None:
+                    value = 1 if name == "aux_var_right" else 0
+                    var.setlb(value)
+                    var.setub(value)
+                    var.fix(value)
+
+            self.deactivate() # deactivate the operator block
+
         except NotImplementedError:
             LOGGER.warning("Operator-specific model constraints are not implemented.")
 
@@ -104,6 +132,35 @@ class BaseOperatorData(BlockData):
                 expr=self.val_right_node <= self.val_right_node.ub * bin_var
             )
 
+        if self._define_aux_var_right:
+            aux = self.aux_var_right
+            lb, ub = aux.bounds  # Capture the tightened numerical bounds.
+
+            self.aux_var_right_lb_con = Constraint(
+                expr=1 + (lb - 1) * bin_var <= aux
+            )
+            self.aux_var_right_ub_con = Constraint(
+                expr=aux <= 1 + (ub - 1) * bin_var
+            )
+
+    def widen_bounds_to_include_zero(self):
+        """
+        Widen domain of disaggregated variables to include zero.
+        Widen domain of auxiliary variable include one.
+        """
+        for var in (
+            self.val_node,
+            self.val_left_node,
+            self.val_right_node,
+        ):
+            var.setlb(min(0, var.lb))
+            var.setub(max(0, var.ub))
+
+        if self._define_aux_var_right:
+            var = self.aux_var_right
+            var.setlb(min(1, var.lb))
+            var.setub(max(1, var.ub))
+
     def construct_convex_relaxation(self):
         """Constructs a convex relaxation of the model"""
         raise NotImplementedError("Convex relaxation is not supported")
@@ -123,6 +180,7 @@ class SumOperatorData(BaseOperatorData):
             expr=self.val_node == self.val_left_node + self.val_right_node
         )
         self.add_bound_constraints()
+        self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
         # Operator model is convex by default, so return.
@@ -141,6 +199,7 @@ class DiffOperatorData(BaseOperatorData):
             expr=self.val_node == self.val_left_node - self.val_right_node
         )
         self.add_bound_constraints()
+        self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
         # Operator model is convex by default, so return.
@@ -159,6 +218,7 @@ class MultOperatorData(BaseOperatorData):
             expr=self.val_node == self.val_left_node * self.val_right_node
         )
         self.add_bound_constraints()
+        self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
         self.evaluate_val_node.deactivate()
@@ -188,7 +248,8 @@ class DivOperatorData(BaseOperatorData):
             expr=self.val_node * self.aux_var_right == self.val_left_node
         )
         fbbt(self.evaluate_val_node)
-        self.add_bound_constraints()
+        self.add_bound_constraints() # use the tightest bounds, i.e. those found by fbbt
+        self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
         self.evaluate_val_node.deactivate()
@@ -216,10 +277,18 @@ class SquareOperatorData(BaseOperatorData):
         self.evaluate_val_node = Constraint(
             expr=self.val_node == self.val_right_node * self.val_right_node
         )
+        # Tighten the bounds
         fbbt(self.evaluate_val_node)
+
+        # Save the tightened interval for relaxation
+        self._tightened_interval = self.val_right_node.bounds
 
         # For unary operator, left node is fixed to zero.
         self.add_bound_constraints(val_left_node=False)
+
+        # Consider the inactive state of the disjunct, when disaggregated variables are zero
+        # Widen the bounds to include zero
+        self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
         self.evaluate_val_node.deactivate()
@@ -243,6 +312,7 @@ class SquareOperatorData(BaseOperatorData):
                 max(self.val_right_node.lb**2, self.val_right_node.ub**2),
             ),
             disjunct_var=self._bin_var_ref,
+            x_interval = self._tightened_interval,
         )
 
     @staticmethod
@@ -259,7 +329,11 @@ class SqrtOperatorData(BaseOperatorData):
             expr=self.val_node == pyo.sqrt(self.val_right_node)
         )
         fbbt(self.evaluate_val_node)
+        # Save the tightened interval for relaxation
+        self._tightened_interval = self.val_right_node.bounds
+
         self.add_bound_constraints(val_left_node=False)
+        self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
         self.evaluate_val_node.deactivate()
@@ -276,10 +350,7 @@ class SqrtOperatorData(BaseOperatorData):
             points="uniform_x",
             y_interval=None,
             disjunct_var=self._bin_var_ref,
-            tangent_interval=(
-                max(pyo.value(self.symbolic_regression_model.eps_value), self.val_right_node.lb),
-                max(pyo.value(self.symbolic_regression_model.eps_value), self.val_right_node.ub),
-            ),
+            x_interval=self._tightened_interval,
         )
 
     @staticmethod
@@ -295,6 +366,11 @@ class ExpOperatorData(BaseOperatorData):
         # Update the domain of variables
         ub_val_node = self.val_node.ub
         ub_val_right_node = self.val_right_node.ub
+
+        if self.val_node.ub <= 0:
+            raise InfeasibleConstraintException(
+                "The exponential output must be strictly positive."
+            )
 
         self.val_node.setlb(max(0, self.val_node.lb))
 
@@ -316,8 +392,11 @@ class ExpOperatorData(BaseOperatorData):
             expr=self.val_node == pyo.exp(self.val_right_node) + self._bin_var_ref - 1
         )
         fbbt(self.evaluate_val_node)
+        # Save the tightened interval for relaxation
+        self._tightened_interval = self.val_right_node.bounds
 
         self.add_bound_constraints(val_left_node=False)
+        self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
         self.evaluate_val_node.deactivate()
@@ -325,7 +404,7 @@ class ExpOperatorData(BaseOperatorData):
         outer_approximation(
             blk=self,
             x=self.val_right_node,
-            y=self.val_node + 1 - self._bin_var_ref,
+            y=self.val_node,
             func=lambda x: pyo.exp(x),
             derivative=lambda x: pyo.exp(x),
             inverse=lambda y: pyo.log(y),
@@ -334,6 +413,7 @@ class ExpOperatorData(BaseOperatorData):
             points="uniform_x",
             y_interval=None,
             disjunct_var=self._bin_var_ref,
+            x_interval = self._tightened_interval,
         )
 
     @staticmethod
@@ -355,7 +435,11 @@ class LogOperatorData(BaseOperatorData):
             expr=self.val_node == pyo.log(self.aux_var_right)
         )
         fbbt(self.evaluate_val_node)
+        # Save the tightened interval for relaxation
+        self._tightened_interval = self.aux_var_right.bounds
+
         self.add_bound_constraints(val_left_node=False)
+        self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
         self.evaluate_val_node.deactivate()
@@ -372,6 +456,7 @@ class LogOperatorData(BaseOperatorData):
             points="uniform_x",
             y_interval=None,
             disjunct_var=self._bin_var_ref,
+            x_interval= self._tightened_interval,
         )
 
     @staticmethod
@@ -411,8 +496,8 @@ class HullSampleBlockData(BlockData):
             # Declare a variable to track the value at this node
             blk.val_node = Var(
                 doc="Value at the node",
-                bounds=(pb.var_bounds["lb"], pb.var_bounds["ub"]),
-            )
+                bounds= (pb.var_bounds["lb"], pb.var_bounds["ub"]) if n == 1 else (min(0, pb.var_bounds["lb"]), max(0, pb.var_bounds["ub"])),
+            ) # root node is always active
 
             # Defining an expression for the val_node variable arising from operands
             blk.value_from_operands = pyo.Expression(
