@@ -49,6 +49,9 @@ class BaseOperatorData(BlockData):
 
         if self._is_unary_operator:
             # For unary operators, left node must not be chosen
+            # First change the bounds to remove warnings in case 0 is not in var_bounds
+            self.val_left_node.setlb(0)
+            self.val_left_node.setub(0)
             self.val_left_node.fix(0)
 
         if self._define_aux_var_right:
@@ -94,8 +97,8 @@ class BaseOperatorData(BlockData):
                     var.setlb(value)
                     var.setub(value)
                     var.fix(value)
-
-            self.deactivate() # deactivate the operator block
+            
+            self.evaluate_val_node.deactivate()
 
         except NotImplementedError:
             LOGGER.warning("Operator-specific model constraints are not implemented.")
@@ -221,6 +224,9 @@ class MultOperatorData(BaseOperatorData):
         self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
+        if not self.evaluate_val_node.active:
+            return
+             
         self.evaluate_val_node.deactivate()
 
         mccormick_envelopes(
@@ -252,6 +258,9 @@ class DivOperatorData(BaseOperatorData):
         self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
+        if not self.evaluate_val_node.active:
+            return
+        
         self.evaluate_val_node.deactivate()
 
         mccormick_envelopes_aux(
@@ -291,6 +300,9 @@ class SquareOperatorData(BaseOperatorData):
         self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
+        if not self.evaluate_val_node.active:
+            return
+        
         self.evaluate_val_node.deactivate()
 
         outer_approximation(
@@ -336,6 +348,9 @@ class SqrtOperatorData(BaseOperatorData):
         self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
+        if not self.evaluate_val_node.active:
+            return
+        
         self.evaluate_val_node.deactivate()
 
         outer_approximation(
@@ -399,6 +414,9 @@ class ExpOperatorData(BaseOperatorData):
         self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
+        if not self.evaluate_val_node.active:
+            return
+        
         self.evaluate_val_node.deactivate()
 
         outer_approximation(
@@ -442,6 +460,9 @@ class LogOperatorData(BaseOperatorData):
         self.widen_bounds_to_include_zero()
 
     def construct_convex_relaxation(self):
+        if not self.evaluate_val_node.active:
+            return
+        
         self.evaluate_val_node.deactivate()
 
         outer_approximation(
