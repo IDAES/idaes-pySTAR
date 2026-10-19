@@ -437,15 +437,23 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         penalty_metrics = {
             "sse": self.sum_square_residual,
             "null": 0,
-            "nodes": sum(self.select_node[:]),
-            "csts": sum(self.select_operator[:, "cst"]),
-            "operators": sum(self.select_operator.values()),
+            "nodes": sum(self.select_node.values()),
+            "csts": sum(
+                self.select_operator[n, "cst"]
+                for n in self.nodes_set
+            ), #sum(self.select_operator[:, "cst"]) is equivalent but raises warning
+            "operators": sum(
+                self.select_operator[n, op]
+                for n in self.nodes_set
+                for op in self.operators_set
+            ),
             "wtd_operators": sum(
                 OPERATOR_WEIGHTS[op] * self.select_operator[n, op]
-                for n, op in self.select_operator.index_set()
+                for n in self.nodes_set
+                for op in self.operators_set
             ),
             "complex_operators": sum(
-                sum(self.select_operator[n, op])
+                self.select_operator[n, op]
                 for n in self.nodes_set
                 for op in (self.operators_set & COMPLEX_OPERATORS)
             ),
@@ -1068,6 +1076,7 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
                 "if big-m constraints are used."
             )
 
+        # Relax only active blocks, i.e. disjuncts with feasible domains
         for blk in self.component_data_objects(pyo.Block):
             if isinstance(blk, BaseOperatorData):
                 blk.construct_convex_relaxation()
