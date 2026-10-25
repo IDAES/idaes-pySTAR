@@ -19,14 +19,15 @@ setup_logger(log_level="info")
 # If no_enumeration=False, then all k NLP's will be solved
 # If no_zero_cst=True, then the algorithm doesn't terminate if the SR expression has a constant that equals zero
 # gurobi_options are added to (or overwrite) the Gurobi options of the MIQP, e.g. {"IntFeasTol": 1e-6}
-def MIQP_NLPs_algorithm(m, k, time_limit, solve_nlp: Callable | None = None, UB: float | None = None, no_enumeration: bool = True, no_zero_cst: bool = False, gurobi_options: dict | None = None):
+# solve_miqp(solver, model) solves the MIQP with the configured Gurobi solver, e.g. to keep its files. By default, solver.solve(model)
+def MIQP_NLPs_algorithm(m, k, time_limit, solve_nlp: Callable | None = None, UB: float | None = None, no_enumeration: bool = True, no_zero_cst: bool = False, gurobi_options: dict | None = None, solve_miqp: Callable | None = None):
 
     start = time.perf_counter()
     if solve_nlp is None:  # Default NLP solver: SCIP with the time left
         solve_nlp = lambda model, solution_index, time_left: solve_with_scip(model, time_left)
     UB = float("inf") if UB is None else UB # incumbent, possibly from a previous run of algorithm
 
-    pool_of_solutions, miqp_optimal, miqp_info = get_MILP_solution_pool(m, k, time_limit, gurobi_options)
+    pool_of_solutions, miqp_optimal, miqp_info = get_MILP_solution_pool(m, k, time_limit, gurobi_options, solve_miqp)
     all_nlps_solved_globally = True
 
     shrank_pool = []
@@ -141,14 +142,14 @@ def MIQP_NLPs_algorithm(m, k, time_limit, solve_nlp: Callable | None = None, UB:
     return optimal_objective, optimal_solution_index, best_model, expression_trees, shrank_pool, proof_of_global_optimality, info
 
 # Step 1
-def get_MILP_solution_pool(m, k, MIQP_time_limit, gurobi_options: dict | None = None):
+def get_MILP_solution_pool(m, k, MIQP_time_limit, gurobi_options: dict | None = None, solve_miqp: Callable | None = None):
     m1 = m.clone()
     m1.relax_nonconvex_constraints()
 
     # Solve the MIQP with gurobi
     print("\n Clone of disjunctive program created and nonconvexities in each disjunct were relaxed. Using hull formulation, the MIQP is now built. \n")
     solver = gurobi_solver(m1, k, MIQP_time_limit, gurobi_options)
-    results = solver.solve(m1)
+    results = solver.solve(m1) if solve_miqp is None else solve_miqp(solver, m1)
 
     # Check if MIQP was solved to global optimality
     miqp_optimal = (results.termination_condition == appsi.base.TerminationCondition.optimal) # True or False
