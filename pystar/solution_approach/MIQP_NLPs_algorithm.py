@@ -13,6 +13,17 @@ from pystar.core.expression_tree import ExpressionTree
 LOGGER = logging.getLogger(__name__)
 setup_logger(log_level="info")
 
+# Default termination tolerances of BARON (EpsA= 1e-6, EpsR= 1e-6): BARON terminates if |U - L| <= EpsA or |U - L| <= EpsR max(|L|, |U|)
+# (SCIP's defaults are limits/absgap = limits/gap = 0, i.e. U = L up to numerics/epsilon = 1e-9)
+EPS_A = 1e-6
+EPS_R = 1e-6
+
+
+def gap_closed(lb, UB):
+    """True if lb >= UB within the termination tolerances, i.e. a tree with lower bound lb cannot improve UB by more
+    than the tolerances. The tolerances apply only to finite bounds"""
+    return lb >= UB or (-float("inf") < lb < UB < float("inf") and (UB - lb <= EPS_A or UB - lb <= EPS_R * max(abs(lb), abs(UB))))
+
 ############ Main function ############
 # time_limit is the total time (s) of the MIQP and the NLPs: the MIQP is capped at time_limit and each NLP gets the time left
 # solve_nlp(model, solution_index, time_limit) solves the NLP of a tree of the pool. By default, SCIP (solve_with_scip)
@@ -69,7 +80,7 @@ def MIQP_NLPs_algorithm(m, k, time_limit, solve_nlp: Callable | None = None, UB:
         shrank_pool.append(nlp_objective)
 
         if no_enumeration and i + 1 < len(pool_of_solutions):
-            if pool_of_solutions[i+1]["objective"] >= UB: #check if lb_i+1 >= min(UB, UB_i)    
+            if gap_closed(pool_of_solutions[i+1]["objective"], UB): #check if lb_i+1 >= min(UB, UB_i) within the tolerances
                 LOGGER.debug("\n For %s-th iteration with objective/lb_i+1 from pool: %s and NLP objective: %s", i, pool_of_solutions[i+1]["objective"], nlp_objective)
                 
                 # Values of the constants of the best tree so far
@@ -109,15 +120,16 @@ def MIQP_NLPs_algorithm(m, k, time_limit, solve_nlp: Callable | None = None, UB:
         best_model = nlp_model
 
     lb_k = pool_of_solutions[-1]["objective"]   # Gurobi sorts the pool best to worst
-    # The trees of the pool that were not solved (pruned or out of time) need lb >= UB. As the pool is sorted,
-    # the first of them is checked
+    # The trees of the pool that were not solved (pruned or out of time) need lb >= UB (within the tolerances). As the
+    # pool is sorted, the first of them is checked
     lb_unsolved = pool_of_solutions[len(shrank_pool)]["objective"] if len(shrank_pool) < len(pool_of_solutions) else float("inf")
-    proof_of_global_optimality = miqp_optimal and all_nlps_solved_globally and lb_unsolved >= UB and (lb_k >= UB or len(pool_of_solutions) < k)
+    proof_of_global_optimality = miqp_optimal and all_nlps_solved_globally and gap_closed(lb_unsolved, UB) and (gap_closed(lb_k, UB) or len(pool_of_solutions) < k)
     if not proof_of_global_optimality:
         LOGGER.warning("\n Global optimality is not certified. UB = %s, lb_k = %s", UB, lb_k)
 
     if proof_of_global_optimality:
-        LB = UB
+        # UB, or the lb of the trees not solved (in the pool, or outside a full pool) if it is below UB within the tolerances
+        LB = min(UB, lb_unsolved, lb_k if len(pool_of_solutions) == k else float("inf"))
     elif miqp_optimal:
         LB = pool_of_solutions[0]["objective"]
     else:

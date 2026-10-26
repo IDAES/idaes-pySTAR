@@ -1,3 +1,20 @@
+"""Small usage examples (see examples/expression_tree.ipynb).
+
+    # Node: create an operand and add slope/intercept parameters.
+    x = Node("x1", tree_index=2)
+    x.is_operand()                           # True
+    x.get_enhanced_expression()              # k_2 + m_2*x1
+
+    # ExpressionTree: substitute constants, build models, and evaluate data.
+    print(ExpressionTree({
+    1: "sum",
+    2: "cst",
+    3: "x1",}))     # 'c_2 + x1'  
+    
+    # NonSimplifiedExpr: display the tree without algebraic simplification.
+    str(NonSimplifiedExpr(tree))             # '(x1 + c_3)'
+"""
+
 import logging
 import pandas as pd
 from pyomo.core.expr.sympy_tools import PyomoSympyBimap, sympy2pyomo_expression
@@ -328,3 +345,70 @@ class ExpressionTree:
 
         data = {f"x{i+1}": point[point.columns[i]] for i in range(len(point.columns))}
         return sp.lambdify(tuple(data), expr)(**data)
+
+# Class representing a non-simplified expression tree as a string, e.g. "(x1 + c_5) + c_3"
+class NonSimplifiedExpr:
+    # Tree as a dictionary, e.g. tree={1: "sum", 2: "x1", 3: "cst}"
+    def __init__(self, tree: list | dict):
+        self.tree = dict(tree) if isinstance(tree, list) else tree
+
+    def __str__(self):
+        return self._get_subtree_for_node(1) # Write the expression starting from the root node
+
+    # Method to recursively write the expression for node n in the tree
+    def _get_subtree_for_node(self, n):
+        op = self.tree[n] # Get the operator/operand at node n, e.g. tree[1]="sum"
+
+        if op == "cst":
+            return f"c_{n}" # E.g. "c_3"
+
+        if op not in ["sum", "diff", "mult", "div", "square", "sqrt", "exp", "log"]:
+            return op # Return the variable name as is, e.g. "x1"
+
+        if op == "square":
+            return f"({self._get_subtree_for_node(2 * n + 1)})^2" # E.g. "x1^2" 
+
+        if op in ["sqrt", "exp", "log"]:
+            return f"{op}({self._get_subtree_for_node(2 * n + 1)})" # E.g. "log(x1)"
+
+        if op in ["sum", "diff", "mult", "div"]:
+            binary_ops = {"sum": "+", "diff": "-", "mult": "*", "div": "/"} # map names to symbols
+            left = self._get_subtree_for_node(2 * n)
+            right = self._get_subtree_for_node(2 * n + 1)
+            return f"({left} {binary_ops[op]} {right})" # E.g. "(x1 + c_3)"
+
+
+class NumberOfPossibleExpressions:
+    """Number of Possible Expressions N(d) up to tree depth d.
+
+    Recursive formula for counting expressions:
+    N(1) = number_of_operands
+    N(d) = num_operands + num_unary_ops * N(d-1) + num_binary_ops * N(d-1)^2
+
+    First term: the root can be an operand, thus there are num_operands possible trees.
+    Second term: the root can be a unary operator, applied to a subtree of depth d-1 (with N(d-1) possible expressions).
+    Third term: the root can be a binary operator, applied to two subtrees of depth d-1 (with N(d-1) possible expressions each).
+    """
+
+    def __init__(self, input_columns, operators, binary_operators, tree_depth):
+
+        operator_set = set(operators)
+        binary_operator_set = set(binary_operators)
+
+        self.num_operands = len(input_columns) + 1  # x's plus cst
+        self.num_binary_operators = len(operator_set & binary_operator_set)
+        self.num_unary_operators = len(operator_set - binary_operator_set)
+        self.tree_depth = tree_depth
+
+    def num_expressions(self):
+    
+        count_of_trees = self.num_operands
+
+        for _ in range(1, self.tree_depth):
+            count_of_trees = (
+                self.num_operands
+                + self.num_unary_operators * count_of_trees
+                + self.num_binary_operators * count_of_trees**2
+            )
+  
+        return count_of_trees
