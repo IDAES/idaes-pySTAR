@@ -117,7 +117,9 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         # pre_non_terminal_nodes_set: Set of nodes without the last two layers
         self.pre_non_terminal_nodes_set = pyo.RangeSet(2 ** (tree_depth - 2) - 1)
         self.non_terminal_nodes_set = pyo.RangeSet(2 ** (tree_depth - 1) - 1)
-        self.terminal_nodes_set = pyo.RangeSet(2 ** (tree_depth - 1), 2**tree_depth - 1)
+        self.terminal_nodes_set = pyo.RangeSet(
+            2 ** (tree_depth - 1), 2**tree_depth - 1
+        )
         self.nodes_set = self.non_terminal_nodes_set.union(self.terminal_nodes_set)
 
         # Lists of allowable operators
@@ -439,9 +441,8 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
             "null": 0,
             "nodes": sum(self.select_node.values()),
             "csts": sum(
-                self.select_operator[n, "cst"]
-                for n in self.nodes_set
-            ), #sum(self.select_operator[:, "cst"]) is equivalent but raises warning
+                self.select_operator[n, "cst"] for n in self.nodes_set
+            ),  # sum(self.select_operator[:, "cst"]) is equivalent but raises warning
             "operators": sum(
                 self.select_operator[n, op]
                 for n in self.nodes_set
@@ -572,6 +573,9 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
             # RHS is either 1 or delta_n
             rhs = 1 if use_unit_bound else blk.select_node[n]
+            if ("square" not in blk.unary_operators_set
+                and "mult" in blk.binary_operators_set):
+                rhs += blk.select_operator[n, "mult"]
 
             # Do not choose the same operand for both the child nodes.
             return (
@@ -857,7 +861,6 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
         @self.Constraint(self.pre_non_terminal_nodes_set, op_list)
         def redundant_inv_func_comp_cuts(blk, n, op_1, op_2):
-
             # RHS is either 1 or delta_n
             rhs = 1 if use_unit_bound else blk.select_node[n]
 
@@ -897,7 +900,6 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
             @self.Constraint(self.non_terminal_nodes_set, near_zero_operands)
             def implication_cuts_div_operator(blk, n, op):
-
                 # RHS is either 1 or delta_n
                 rhs = 1 if use_unit_bound else blk.select_node[n]
 
@@ -914,7 +916,6 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
             @self.Constraint(self.non_terminal_nodes_set, negative_operands)
             def implication_cuts_sqrt_operator(blk, n, op):
-
                 # RHS is either 1 or delta_n
                 rhs = 1 if use_unit_bound else blk.select_node[n]
 
@@ -932,7 +933,6 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
 
             @self.Constraint(self.non_terminal_nodes_set, non_positive_operands)
             def implication_cuts_log_operator(blk, n, op):
-
                 # RHS is either 1 or delta_n
                 rhs = 1 if use_unit_bound else blk.select_node[n]
 
