@@ -341,7 +341,8 @@ class ExpressionTree:
             Variable values.
         """
         cst_values = getattr(self, "cst_values", None)
-        expr = self.substitute_cst_values(cst_values)
+        # Undefined values, e.g. division by a zero constant (zoo, which lambdify cannot print), are NaN
+        expr = self.substitute_cst_values(cst_values).xreplace({sp.zoo: sp.nan})
 
         data = {f"x{i+1}": point[point.columns[i]] for i in range(len(point.columns))}
         return sp.lambdify(tuple(data), expr)(**data)

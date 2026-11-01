@@ -11,6 +11,7 @@ from pyomo.environ import Var, Constraint
 from pystar.core.bigm_operators import BigmSampleBlock, BigmSampleBlockData
 from pystar.core.expression_tree import ExpressionTree
 from pystar.core.hull_operators import BaseOperatorData, HullSampleBlock
+from pystar.core.relaxations import outer_approximation
 
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_UNARY_OPS = ["square", "sqrt", "log", "exp"]
@@ -1080,6 +1081,29 @@ class SymbolicRegressionModel(pyo.ConcreteModel):
         for blk in self.component_data_objects(pyo.Block):
             if isinstance(blk, BaseOperatorData):
                 blk.construct_convex_relaxation()
+
+        # Relax log_sse = n * log(aux_var_sse / n) of the regularized objectives (bic, aic, ...)
+        if isinstance(self.find_component("compute_log_sse_value"), Constraint):
+            self._relax_log_sse()
+
+    def _relax_log_sse(self):
+        """Replaces log_sse = n * log(aux_var_sse / n) with its secant, a linear underestimator
+        of the concave log over the bounds of aux_var_sse. log_sse is minimized, so the
+        tangents (overestimators) do not affect the relaxation and are omitted"""
+        num_data_pts = self.num_data_pts
+        self.compute_log_sse_value.deactivate()
+        self.log_sse_relaxation = pyo.Block()
+        outer_approximation(
+            blk=self.log_sse_relaxation,
+            x=self.aux_var_sse,
+            y=self.log_sse,
+            func=lambda x: num_data_pts * math.log(x / num_data_pts),
+            derivative=lambda x: num_data_pts / x,
+            inverse=lambda y: num_data_pts * math.exp(y / num_data_pts),
+            func_type="concave",
+            num_tangents=0,
+            x_interval=(pyo.value(self.aux_var_sse.lb), pyo.value(self.aux_var_sse.ub)),
+        )
 
     def get_selected_operators(self):
         """
