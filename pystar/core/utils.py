@@ -1,5 +1,6 @@
 from gurobipy import nlfunc
 import pyomo.environ as pyo
+from pyomo.contrib.solver.solvers.gurobi.gurobi_persistent import GurobiPersistent
 import pystar.core.bigm_operators as bop
 import pystar.core.hull_operators as hop
 from pystar.core.symbolic_regression import SymbolicRegressionModel
@@ -74,6 +75,12 @@ def _bigm_gurobi_formulation(srm: SymbolicRegressionModel):
 
 def _hull_gurobi_formulation(m: SymbolicRegressionModel):
     """Uses Gurobibpy interface to solve the MINLP"""
+    if m._objective_function_data["objective_type"] in ("mse", "aic_cor"):
+        raise ValueError("The chosen objective function is not supported")
+
+    if hasattr(m, "log_sse") and isinstance(m.log_sse, pyo.Expression):
+        raise ValueError("Must linearize the log(SSE) term")
+
     op_list = (
         hop.ExpOperatorData,
         hop.LogOperatorData,
@@ -85,8 +92,13 @@ def _hull_gurobi_formulation(m: SymbolicRegressionModel):
             # Deactivate the nonlinear constraint
             blk.evaluate_val_node.deactivate()
 
+    if hasattr(m, "log_sse"):
+        m.compute_log_sse_value.deactivate()
+
     # pylint: disable = protected-access
-    grb = pyo.SolverFactory("gurobi_persistent")
+    grb = GurobiPersistent()
+    grb.config.raise_exception_on_nonoptimal_result = False
+    grb.config.symbolic_solver_labels = True
     grb.set_instance(m)
     gm = grb._solver_model
     pm_to_gm = grb._pyomo_var_to_solver_var_map
@@ -113,27 +125,31 @@ def _hull_gurobi_formulation(m: SymbolicRegressionModel):
                 pm_to_gm[blk.val_node] == nlfunc.sqrt(pm_to_gm[blk.val_right_node])
             )
 
-    # Activate the constraint back
-    for blk in m.component_data_objects(pyo.Block):
-        if isinstance(blk, op_list):
-            # Activate the nonlinear constraint
-            blk.evaluate_val_node.activate()
+    if hasattr(m, "log_sse"):
+        gm.addConstr(
+            pm_to_gm[m.log_sse]
+            == m.num_data_pts * nlfunc.log(pm_to_gm[m.aux_var_sse])
+            - m.num_data_pts * pyo.log(m.num_data_pts)
+        )
+        # m.compute_log_sse_value.activate()
+
+    # # Activate the constraint back
+    # for blk in m.component_data_objects(pyo.Block):
+    #     if isinstance(blk, op_list):
+    #         # Activate the nonlinear constraint
+    #         blk.evaluate_val_node.activate()
 
     return grb
 
 
-def get_gurobi(srm: SymbolicRegressionModel, options: dict | None = None):
+def get_gurobi(srm: SymbolicRegressionModel):
     """Returns Gurobi solver object"""
-    if options is None:
-        # Set default termination criteria
-        options = {"MIPGap": 0.01, "TimeLimit": 3600}
 
     if srm.model_type == "bigm":
         solver = _bigm_gurobi_formulation(srm)
     else:
         solver = _hull_gurobi_formulation(srm)
 
-    solver.options.update(options)
     return solver
 
 

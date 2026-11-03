@@ -1,21 +1,22 @@
 """Small usage examples (see examples/expression_tree.ipynb).
 
-    # Node: create an operand and add slope/intercept parameters.
-    x = Node("x1", tree_index=2)
-    x.is_operand()                           # True
-    x.get_enhanced_expression()              # k_2 + m_2*x1
+# Node: create an operand and add slope/intercept parameters.
+x = Node("x1", tree_index=2)
+x.is_operand()                           # True
+x.get_enhanced_expression()              # k_2 + m_2*x1
 
-    # ExpressionTree: substitute constants, build models, and evaluate data.
-    print(ExpressionTree({
-    1: "sum",
-    2: "cst",
-    3: "x1",}))     # 'c_2 + x1'  
-    
-    # NonSimplifiedExpr: display the tree without algebraic simplification.
-    str(NonSimplifiedExpr(tree))             # '(x1 + c_3)'
+# ExpressionTree: substitute constants, build models, and evaluate data.
+print(ExpressionTree({
+1: "sum",
+2: "cst",
+3: "x1",}))     # 'c_2 + x1'
+
+# NonSimplifiedExpr: display the tree without algebraic simplification.
+str(NonSimplifiedExpr(tree))             # '(x1 + c_3)'
 """
 
 import logging
+from itertools import combinations
 import pandas as pd
 from pyomo.core.expr.sympy_tools import PyomoSympyBimap, sympy2pyomo_expression
 import pyomo.environ as pyo
@@ -346,6 +347,67 @@ class ExpressionTree:
         data = {f"x{i+1}": point[point.columns[i]] for i in range(len(point.columns))}
         return sp.lambdify(tuple(data), expr)(**data)
 
+    def get_redundant_constants(self, point: pd.DataFrame):
+        """Identifies if any constants can be eliminated from the expression.
+
+        Parameters
+        ----------
+        point : pd.DataFrame
+            Input variable values
+        """
+        all_csts = {v for v in self.sympy_expression.free_symbols if "c_" in str(v)}
+        if len(all_csts) <= 1:
+            # We may have expressions of the form y = c_1 * x1 or y = c_1 + x1
+            # In such cases, we do not want to eliminate the constant.
+            return {"mult_csts": [], "add_csts": []}
+
+        data = {f"x{i+1}": point[point.columns[i]] for i in range(len(point.columns))}
+        try:
+            y = sp.lambdify(tuple(data), self.sympy_expression, "numpy")(**data)
+        except TypeError:
+            y = point.apply(
+                lambda row: self.sympy_expression.subs(dict(zip(data, row))), axis=1
+            )
+
+        try:
+            mult_csts = list(
+                {
+                    frozenset(all_csts - sp.simplify(y[i] / y[j]).free_symbols)
+                    for i, j in combinations(y.index, 2)
+                }
+            )
+        except AttributeError:
+            # We encounter this error if the expression simplifies to a constant
+            mult_csts = [frozenset()]
+
+        try:
+            add_csts = list(
+                {
+                    frozenset(all_csts - sp.simplify(y[i] - y[j]).free_symbols)
+                    for i, j in combinations(y.index, 2)
+                }
+            )
+        except AttributeError:
+            add_csts = [frozenset()]
+
+        def _get_list_of_csts(lst_csts: list):
+            if len(lst_csts) == 1:
+                # There is no ambiguity in this case. All data points agree
+                return [int(str(c).split("_", maxsplit=1)[-1]) for c in lst_csts[0]]
+
+            _logger.warning(
+                f"The expression {self.sympy_expression} may have multiple redundant constants."
+            )
+            rc = lst_csts[0].intersection(*lst_csts[1:])
+            _logger.warning(f"\tIdentified {rc} as redundant constants.")
+            return [int(str(c).split("_", maxsplit=1)[-1]) for c in rc]
+
+        return {
+            "mult_csts": _get_list_of_csts(mult_csts),
+            "add_csts": _get_list_of_csts(add_csts),
+        }
+
+
 # Class representing a non-simplified expression tree as a string, e.g. "(x1 + c_5) + c_3"
 class NonSimplifiedExpr:
     # Tree as a dictionary, e.g. tree={1: "sum", 2: "x1", 3: "cst}"
@@ -353,29 +415,36 @@ class NonSimplifiedExpr:
         self.tree = dict(tree) if isinstance(tree, list) else tree
 
     def __str__(self):
-        return self._get_subtree_for_node(1) # Write the expression starting from the root node
+        return self._get_subtree_for_node(
+            1
+        )  # Write the expression starting from the root node
 
     # Method to recursively write the expression for node n in the tree
     def _get_subtree_for_node(self, n):
-        op = self.tree[n] # Get the operator/operand at node n, e.g. tree[1]="sum"
+        op = self.tree[n]  # Get the operator/operand at node n, e.g. tree[1]="sum"
 
         if op == "cst":
-            return f"c_{n}" # E.g. "c_3"
+            return f"c_{n}"  # E.g. "c_3"
 
         if op not in ["sum", "diff", "mult", "div", "square", "sqrt", "exp", "log"]:
-            return op # Return the variable name as is, e.g. "x1"
+            return op  # Return the variable name as is, e.g. "x1"
 
         if op == "square":
-            return f"({self._get_subtree_for_node(2 * n + 1)})^2" # E.g. "x1^2" 
+            return f"({self._get_subtree_for_node(2 * n + 1)})^2"  # E.g. "x1^2"
 
         if op in ["sqrt", "exp", "log"]:
-            return f"{op}({self._get_subtree_for_node(2 * n + 1)})" # E.g. "log(x1)"
+            return f"{op}({self._get_subtree_for_node(2 * n + 1)})"  # E.g. "log(x1)"
 
         if op in ["sum", "diff", "mult", "div"]:
-            binary_ops = {"sum": "+", "diff": "-", "mult": "*", "div": "/"} # map names to symbols
+            binary_ops = {
+                "sum": "+",
+                "diff": "-",
+                "mult": "*",
+                "div": "/",
+            }  # map names to symbols
             left = self._get_subtree_for_node(2 * n)
             right = self._get_subtree_for_node(2 * n + 1)
-            return f"({left} {binary_ops[op]} {right})" # E.g. "(x1 + c_3)"
+            return f"({left} {binary_ops[op]} {right})"  # E.g. "(x1 + c_3)"
 
 
 class NumberOfPossibleExpressions:
@@ -401,7 +470,7 @@ class NumberOfPossibleExpressions:
         self.tree_depth = tree_depth
 
     def num_expressions(self):
-    
+
         count_of_trees = self.num_operands
 
         for _ in range(1, self.tree_depth):
@@ -410,5 +479,5 @@ class NumberOfPossibleExpressions:
                 + self.num_unary_operators * count_of_trees
                 + self.num_binary_operators * count_of_trees**2
             )
-  
+
         return count_of_trees
